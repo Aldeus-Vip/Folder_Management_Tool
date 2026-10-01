@@ -85,6 +85,8 @@ func (a *App) Handler() http.Handler {
 		"POST /api/close":        a.apiClose,
 		"POST /api/import-excel": a.apiImportExcel,
 		"POST /api/scan":         a.apiScan,
+		"POST /api/merge":        a.apiMerge,
+		"POST /api/dbinfo":       a.apiDBInfo,
 		"GET /api/job":           a.apiJob,
 		"POST /api/job/cancel":   a.apiJobCancel,
 		"POST /api/dialog":       a.apiDialog,
@@ -430,6 +432,62 @@ func (a *App) apiScan(r *http.Request) (any, error) {
 	})
 }
 
+func (a *App) apiMerge(r *http.Request) (any, error) {
+	var req struct {
+		DBs    []string
+		DB     string
+		Prefer string // newest | order
+	}
+	if err := decode(r, &req); err != nil {
+		return nil, err
+	}
+	var dbs []string
+	for _, p := range req.DBs {
+		p = strings.Trim(strings.TrimSpace(p), `"`)
+		if p == "" {
+			continue
+		}
+		if _, err := os.Stat(p); err != nil {
+			return nil, badRequest("DBが見つかりません: %s", p)
+		}
+		dbs = append(dbs, p)
+	}
+	if len(dbs) < 2 {
+		return nil, badRequest("統合するDBを2つ以上指定してください")
+	}
+	db, err := a.resolveDBPath(req.DB, "merged_"+time.Now().Format("20060102_1504"))
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range dbs {
+		if samePath(p, db) {
+			return nil, badRequest("保存先に統合元と同じDBは指定できません")
+		}
+	}
+	return a.startJob("merge", db, func(ctx context.Context, prog fsdb.Progress) (*ingest.Result, error) {
+		return ingest.Merge(ctx, dbs, db, req.Prefer != "order", prog)
+	})
+}
+
+// apiDBInfo は統合候補DBのルート・取得日時を返す(画面の一覧表示用)。
+func (a *App) apiDBInfo(r *http.Request) (any, error) {
+	var req struct{ Paths []string }
+	if err := decode(r, &req); err != nil {
+		return nil, err
+	}
+	out := []map[string]string{}
+	for _, p := range req.Paths {
+		p = strings.Trim(strings.TrimSpace(p), `"`)
+		ms, err := ingest.ReadMergeSource(p)
+		if err != nil {
+			out = append(out, map[string]string{"path": p, "error": err.Error()})
+			continue
+		}
+		out = append(out, map[string]string{"path": p, "root": ms.Root, "date": ms.Date, "source": ms.Source})
+	}
+	return out, nil
+}
+
 func (a *App) apiJob(r *http.Request) (any, error) {
 	a.mu.RLock()
 	job := a.job
@@ -459,7 +517,7 @@ func (a *App) apiDialog(r *http.Request) (any, error) {
 	if err != nil {
 		return nil, badRequest("%v", err)
 	}
-	return map[string]string{"path": p}, nil
+	return map[string]any{"path": p, "paths": strings.FieldsFunc(p, func(c rune) bool { return c == '\n' || c == '\r' })}, nil
 }
 
 func (a *App) apiShutdown(r *http.Request) (any, error) {

@@ -81,6 +81,11 @@ func (s *Store) WritePlanScript(w io.Writer) error {
 	meta, _ := s.Meta()
 	root := meta["root"]
 	sep := meta["sep"]
+	virtual := meta["virtual"] == "true"
+	archive := root + "_Archive"
+	if virtual {
+		archive = "D:\\Archive"
+	}
 	var ns []Node
 	err := s.SearchEach(Filter{Action: "any"}, func(n *Node) error {
 		if n.Action == "削除" || n.Action == "アーカイブ" || n.Action == "移動" || n.Action == "名前変更" {
@@ -135,7 +140,7 @@ function Ensure-Parent($p) {
 }
 if ($DryRun) { Write-Host '*** ドライラン(変更しません)。実行するには -Execute を付けてください ***' -ForegroundColor Cyan }
 
-`, time.Now().Format("2006/01/02 15:04:05"), root, len(ns), psQuote(root+"_Archive"))
+`, time.Now().Format("2006/01/02 15:04:05"), root, len(ns), psQuote(archive))
 
 	// 親フォルダが削除/移動/アーカイブされる項目は、親の操作に含まれるので個別には実行しない。
 	// 子→親の順(ID降順)で実行し、親の名前変更より先に子の操作が終わるようにする。
@@ -171,6 +176,9 @@ if ($DryRun) { Write-Host '*** ドライラン(変更しません)。実行す�
 			fmt.Fprintf(&b, "Invoke-Step '削除' %s '' { Remove-Item -LiteralPath %s -Recurse -Force }\n", src, src)
 		case "アーカイブ":
 			rel := strings.TrimPrefix(strings.TrimPrefix(n.Path, root), sep)
+			if virtual { // 統合DB(共通の親なし): \\srv\share\x → srv\share\x、C:\x → C\x
+				rel = strings.ReplaceAll(strings.TrimLeft(n.Path, sep), ":", "")
+			}
 			fmt.Fprintf(&b, "$dst = Join-Path $ArchiveRoot %s\nInvoke-Step 'アーカイブ' %s $dst { Ensure-Parent $dst; Move-Item -LiteralPath %s -Destination $dst }\n", psQuote(rel), src, src)
 		case "移動":
 			if n.Dest == "" {

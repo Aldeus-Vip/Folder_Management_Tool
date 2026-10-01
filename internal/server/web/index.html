@@ -5,7 +5,16 @@
 <title>FolderManager</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%22.9em%22 font-size=%2290%22%3E📁%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="app.css">
-<script>window.TOKEN = "__TOKEN__";</script>
+<script>
+window.TOKEN = "__TOKEN__";
+// テーマ(自動/ライト/ダーク)。描画前に適用してちらつきを防ぐ
+(function () {
+  var t = 'auto';
+  try { t = localStorage.getItem('fm-theme') || 'auto'; } catch (e) { }
+  var dark = t === 'dark' || (t === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+})();
+</script>
 </head>
 <body>
 <header id="top">
@@ -22,6 +31,7 @@
   </nav>
   <span id="jobmini" hidden></span>
   <div id="dbname"></div>
+  <button id="theme" title="表示テーマの切替(自動 / ライト / ダーク)"></button>
 </header>
 
 <div id="body">
@@ -67,6 +77,21 @@
     </div>
     <div id="projects"></div>
   </div>
+  <div class="card">
+    <h2>④ 複数のDBを統合する(マージ)</h2>
+    <p class="hint">部署ごと・ドライブごとにスキャン/取込したDBを、<b>フルパスを基準に1つのツリーへ統合</b>した新しいDBを作ります(元のDBは変更しません)。<br>
+    ・共通の親フォルダがあればそれがルートになります。無い場合(別サーバー・別ドライブ)は「(統合ルート)」の下に並べます。<br>
+    ・同じパスが複数のDBにあるときは、下の「優先」の設定に従って1つを採用します。アクション・担当・メモも同じ順で引き継ぎます。</p>
+    <div class="form" style="margin-bottom:8px">
+      <span>DBを追加</span><input type="text" id="mg-path" placeholder="DBのパス(保存済みDBは右のボタンから選択)"><span style="display:flex;gap:4px"><button id="mg-add">追加</button><button id="mg-ref">参照…</button><button id="mg-saved">保存済みから選択…</button></span>
+    </div>
+    <table class="t" id="mg-list"></table>
+    <div class="form" style="margin-top:10px">
+      <span>重複時の優先</span><select id="mg-prefer"><option value="newest">データ取得日時が新しいDBを優先(推奨)</option><option value="order">一覧の上にあるDBを優先</option></select><span></span>
+      <span>保存するDB名</span><input type="text" id="mg-db" placeholder="空欄なら merged_日時"><span></span>
+      <span></span><button class="primary" id="mg-go">統合開始</button><span></span>
+    </div>
+  </div>
   <div class="hint">終了するときは、黒いウィンドウ(コンソール)を閉じるか <a id="quit">ツールを終了</a> を押してください。</div>
 </section>
 
@@ -82,6 +107,13 @@
     <button id="tr-expand">展開</button>
     <span class="sep"></span>
     <label><input type="checkbox" id="tr-dirs"> フォルダのみ</label>
+    <span class="sep"></span>
+    <span>サイズゲージ</span>
+    <select id="tr-gauge" title="ゲージの長さの基準">
+      <option value="parent">親フォルダに占める割合</option>
+      <option value="root">全体(ルート)に占める割合</option>
+      <option value="off">表示しない</option>
+    </select>
     <span class="sep"></span>
     <input type="text" id="tr-path" placeholder="フルパスを貼り付けて移動" style="width:280px">
     <button id="tr-go">移動</button>

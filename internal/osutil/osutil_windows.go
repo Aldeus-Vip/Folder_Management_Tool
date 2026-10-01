@@ -26,6 +26,8 @@ func Dialog(kind DialogKind, initial string) (string, error) {
 		body = `$d = New-Object System.Windows.Forms.OpenFileDialog; $d.Filter = 'Excel (*.xlsx)|*.xlsx|すべて (*.*)|*.*'`
 	case OpenDB:
 		body = `$d = New-Object System.Windows.Forms.OpenFileDialog; $d.Filter = 'フォルダ整理DB (*.db)|*.db|すべて (*.*)|*.*'`
+	case OpenDBs:
+		body = `$d = New-Object System.Windows.Forms.OpenFileDialog; $d.Multiselect = $true; $d.Filter = 'フォルダ整理DB (*.db)|*.db|すべて (*.*)|*.*'`
 	case SaveDB:
 		body = `$d = New-Object System.Windows.Forms.SaveFileDialog; $d.Filter = 'フォルダ整理DB (*.db)|*.db'; $d.OverwritePrompt = $true`
 	case PickFolder:
@@ -33,7 +35,7 @@ func Dialog(kind DialogKind, initial string) (string, error) {
 	default:
 		return "", fmt.Errorf("unknown dialog %q", kind)
 	}
-	if initial != "" {
+	if initial != "" && kind != OpenDBs {
 		if kind == PickFolder {
 			body += "; $d.SelectedPath = " + psQuote(initial)
 		} else {
@@ -43,10 +45,12 @@ func Dialog(kind DialogKind, initial string) (string, error) {
 	prop := "FileName"
 	if kind == PickFolder {
 		prop = "SelectedPath"
+	} else if kind == OpenDBs {
+		prop = "FileNames -join [Environment]::NewLine"
 	}
 	script := `[Console]::OutputEncoding = [Text.Encoding]::UTF8; Add-Type -AssemblyName System.Windows.Forms; ` +
 		`$owner = New-Object System.Windows.Forms.Form -Property @{TopMost = $true; ShowInTaskbar = $false}; ` +
-		body + `; if ($d.ShowDialog($owner) -eq 'OK') { Write-Output $d.` + prop + ` }`
+		body + `; if ($d.ShowDialog($owner) -eq 'OK') { Write-Output ($d.` + prop + `) }`
 	out, err := hidden(exec.Command("powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-Command", script)).Output()
 	if err != nil {
 		return "", fmt.Errorf("ダイアログを表示できません: %w", err)

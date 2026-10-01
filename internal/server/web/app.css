@@ -1,13 +1,29 @@
+/* 色はすべてトークンで定義し、ダークモードは同じトークンを上書きする */
 :root {
-  --bg: #f4f6f9; --surface: #fff; --line: #d9dee6; --line2: #eceff4;
-  --ink: #1d2533; --ink2: #556070; --ink3: #8a94a3;
-  --accent: #2f5fb3; --accent-ink: #fff; --head: #4472c4;
+  --bg: #f4f6f9; --surface: #fff; --line: #d9dee6; --line2: #eceff4; --hover: #f0f5ff;
+  --ink: #1d2533; --ink2: #556070; --ink3: #8a94a3; --guide: #7d8796;
+  --accent: #2f5fb3; --accent-ink: #fff; --head: #4472c4; --head-ink: #fff;
   --dir: #ddebf7; --warn: #ffc7ce; --sel: #b9d3ff; --sel-line: #2f5fb3;
-  --bar: #5b8bd9; --amber: #b26a00; --amber-bg: #fff1d6; --red: #b3261e; --red-bg: #fde3e1;
-  --green: #1e7b34; --green-bg: #dff3e3;
+  --bar: #5b8bd9; --track: #e6ebf2;
+  --amber: #b26a00; --amber-bg: #fff1d6; --red: #b3261e; --red-bg: #fde3e1;
+  --green: #1e7b34; --green-bg: #dff3e3; --violet: #5b3cc4; --violet-bg: #ece6ff;
+  --blue: #1f5aa6; --blue-bg: #e3eefc; --teal: #0f6b77; --teal-bg: #e1f4f6;
+  --toast: #263142; --scrim: rgba(20,30,45,.35); --shadow: rgba(0,0,0,.2);
   --mono: "MS Gothic", "ＭＳ ゴシック", "Osaka-Mono", monospace;
   font-family: "Yu Gothic UI", "Meiryo UI", "Meiryo", system-ui, sans-serif;
-  font-size: 13px; color: var(--ink);
+  font-size: 13px; color: var(--ink); color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --bg: #12161d; --surface: #1a1f28; --line: #2e3643; --line2: #252c37; --hover: #222b38;
+  --ink: #e3e8ef; --ink2: #a9b3c1; --ink3: #7a8594; --guide: #6c7686;
+  --accent: #6b9cf0; --accent-ink: #0d1420; --head: #2c4a80; --head-ink: #eef3fb;
+  --dir: #1d2a3b; --warn: #45242a; --sel: #2b4a7a; --sel-line: #8db4ff;
+  --bar: #6f9be6; --track: #2a323e;
+  --amber: #f0b45a; --amber-bg: #3a2d16; --red: #ff9a90; --red-bg: #4a2427;
+  --green: #79d08c; --green-bg: #1d3a25; --violet: #b9a6ff; --violet-bg: #2e2650;
+  --blue: #8fbaf5; --blue-bg: #1d3150; --teal: #74d0dc; --teal-bg: #163a40;
+  --toast: #3a4556; --scrim: rgba(0,0,0,.55); --shadow: rgba(0,0,0,.5);
+  color-scheme: dark;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: var(--bg); }
@@ -60,7 +76,7 @@ h3 { font-size: 14px; margin: 0 0 8px; color: var(--ink2); }
 table.t { border-collapse: collapse; width: 100%; }
 table.t th, table.t td { padding: 5px 8px; border-bottom: 1px solid var(--line2); text-align: left; white-space: nowrap; }
 table.t th { color: var(--ink2); font-weight: 600; font-size: 12px; }
-table.t tr.click:hover td { background: #f0f5ff; cursor: pointer; }
+table.t tr.click:hover td { background: var(--hover); cursor: pointer; }
 td.wrap { white-space: normal; word-break: break-all; }
 .meter { display: flex; align-items: center; gap: 6px; min-width: 140px; }
 .meter i { display: block; height: 10px; background: var(--bar); border-radius: 0 4px 4px 0; min-width: 1px; }
@@ -68,8 +84,8 @@ td.wrap { white-space: normal; word-break: break-all; }
 /* ---- 仮想グリッド ---- */
 .grid { position: relative; flex: 1; min-height: 0; background: var(--surface); outline: none; }
 .g-scroll { position: absolute; inset: 0; overflow: auto; }
-.g-head { position: sticky; top: 0; z-index: 2; display: flex; height: 26px; background: var(--head); color: #fff; }
-.g-hc { position: relative; flex: none; padding: 0 8px; line-height: 26px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-right: 1px solid rgba(255,255,255,.25); user-select: none; }
+.g-head { position: sticky; top: 0; z-index: 2; display: flex; height: 26px; background: var(--head); color: var(--head-ink); }
+.g-hc { position: relative; flex: none; padding: 0 8px; line-height: 26px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-right: 1px solid rgba(255,255,255,.2); user-select: none; }
 .g-hc.sortable { cursor: pointer; }
 .g-hc .rz { position: absolute; right: 0; top: 0; width: 6px; height: 100%; cursor: col-resize; }
 .g-rows { position: absolute; left: 0; top: 26px; }
@@ -81,7 +97,7 @@ td.wrap { white-space: normal; word-break: break-all; }
 .g-row.loading { color: var(--ink3); padding-left: 10px; line-height: 24px; }
 .g-cell { flex: none; padding: 0 6px; line-height: 23px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-right: 1px solid var(--line2); }
 .g-empty { position: absolute; top: 60px; width: 100%; text-align: center; color: var(--ink3); }
-.tl { font-family: var(--mono); color: #7d8796; white-space: pre; }
+.tl { font-family: var(--mono); color: var(--guide); white-space: pre; }
 .tw { display: inline-block; width: 16px; text-align: center; color: var(--ink2); cursor: pointer; }
 .tw:hover { color: var(--accent); }
 .ico { display: inline-block; width: 18px; }
@@ -94,11 +110,11 @@ td.wrap { white-space: normal; word-break: break-all; }
 .b.org { background: var(--amber-bg); color: var(--amber); }
 .act { display: inline-block; padding: 0 7px; border-radius: 4px; font-size: 12px; line-height: 18px; font-weight: 600; }
 .act-残す { background: var(--green-bg); color: var(--green); }
-.act-要確認 { background: #ece6ff; color: #5b3cc4; }
+.act-要確認 { background: var(--violet-bg); color: var(--violet); }
 .act-削除 { background: var(--red-bg); color: var(--red); }
-.act-アーカイブ { background: #e3eefc; color: #1f5aa6; }
+.act-アーカイブ { background: var(--blue-bg); color: var(--blue); }
 .act-移動 { background: var(--amber-bg); color: var(--amber); }
-.act-名前変更 { background: #e1f4f6; color: #0f6b77; }
+.act-名前変更 { background: var(--teal-bg); color: var(--teal); }
 
 /* ---- 分割(エクスプローラー) ---- */
 .split { flex: 1; display: flex; min-height: 0; }
@@ -130,18 +146,26 @@ td.wrap { white-space: normal; word-break: break-all; }
 .progress.indet i { width: 30% !important; animation: indet 1.2s infinite linear; }
 @keyframes indet { from { margin-left: -30%; } to { margin-left: 100%; } }
 #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 6px; z-index: 20; }
-#toast div { background: #263142; color: #fff; padding: 8px 14px; border-radius: 8px; box-shadow: 0 4px 14px rgba(0,0,0,.2); max-width: 70vw; }
+#toast div { background: var(--toast); color: #fff; padding: 8px 14px; border-radius: 8px; box-shadow: 0 4px 14px var(--shadow); max-width: 70vw; }
 #toast div.err { background: var(--red); }
-#modal { position: fixed; inset: 0; background: rgba(20,30,45,.35); display: flex; align-items: center; justify-content: center; z-index: 10; }
-#modal .box { background: var(--surface); border-radius: 12px; padding: 18px 20px; min-width: 420px; max-width: 90vw; max-height: 85vh; overflow: auto; box-shadow: 0 10px 40px rgba(0,0,0,.25); }
+#modal { position: fixed; inset: 0; background: var(--scrim); display: flex; align-items: center; justify-content: center; z-index: 10; }
+#modal .box { background: var(--surface); border-radius: 12px; padding: 18px 20px; min-width: 420px; max-width: 90vw; max-height: 85vh; overflow: auto; box-shadow: 0 10px 40px var(--shadow); }
 #modal .box .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 
 /* ---- 重複候補 ---- */
 .dupg { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; }
 .dupg .h { display: flex; gap: 10px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line2); flex-wrap: wrap; }
 .dupg .m { display: flex; gap: 10px; padding: 3px 10px; cursor: pointer; align-items: center; }
-.dupg .m:hover { background: #f0f5ff; }
+.dupg .m:hover { background: var(--hover); }
 .dupg .m.sel { background: var(--sel); }
 .dupg .m .p { flex: 1; font-family: var(--mono); font-size: 12px; word-break: break-all; }
 .hash { font-family: var(--mono); font-size: 11px; }
 .check-grp { margin-bottom: 10px; }
+
+/* ---- テーマ切替・サイズゲージ・統合 ---- */
+#theme { border: none; background: none; font-size: 15px; padding: 2px 6px; }
+.gauge { display: flex; align-items: center; gap: 6px; }
+.gauge .tr { flex: 1; height: 10px; background: var(--track); border-radius: 0 4px 4px 0; overflow: hidden; }
+.gauge .tr i { display: block; height: 100%; background: var(--bar); border-radius: 0 4px 4px 0; }
+.gauge span { width: 44px; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink2); font-size: 12px; }
+#mg-list td .mini { padding: 0 6px; font-size: 12px; }

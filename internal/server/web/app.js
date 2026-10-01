@@ -19,6 +19,12 @@ function fmtDate(t) {
   return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+const srcLabel = m => ({ excel: 'Excel取込', scan: 'フォルダスキャン', merge: 'DB統合' }[m.source] || m.source || '');
+const store = {
+  get(k, d) { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (e) { } },
+};
+
 async function api(path, body) {
   const opt = { method: body ? 'POST' : 'GET', headers: { 'X-Token': TOKEN } };
   if (body) { opt.body = JSON.stringify(body); opt.headers['Content-Type'] = 'application/json'; }
@@ -265,6 +271,7 @@ class TreeModel {
   q() { return this.dirsOnly ? '&dirs=1' : ''; }
   prep(r, parent) {
     r._anc = parent ? parent._anc + (parent.d >= 1 ? (parent._last ? '　' : '┃') : '') : '';
+    r._ps = parent ? parent.s : r.s; // 親フォルダのサイズ(サイズゲージの基準)
     r._has = r.dir && (this.dirsOnly ? r.dc > 0 : r.cc > 0);
     r._open = false;
   }
@@ -487,7 +494,7 @@ Views.home = {
     const db = S.state.db;
     $('#home-current').innerHTML = db ? `<h2>開いているDB</h2>
       <div class="path" style="font-family:var(--mono)">${esc(db.path)}</div>
-      <p class="hint">取込元: ${db.meta.source === 'excel' ? 'Excel' : 'フォルダスキャン'} (${esc(db.meta.source_path || '')})<br>
+      <p class="hint">取込元: ${srcLabel(db.meta)} (${esc((db.meta.source_path || '').split('\n').join(' / '))})<br>
       作成: ${esc(db.meta.built_at || '')} ・ 項目数: ${fmtNum(+db.meta.node_count)}</p>
       <button class="primary" onclick="show('summary')">サマリーを見る</button> <button onclick="show('tree')">ツリーで見る</button> <button onclick="show('explorer')">エクスプローラーで見る</button>
       <button id="home-close">閉じる</button>`
@@ -519,7 +526,7 @@ const Job = {
   poll: guard(async function () {
     const j = await api('/api/job');
     const pct = j.total > 0 ? Math.min(100, j.done / j.total * 100) : 0;
-    const txt = `${j.kind === 'excel' ? 'Excel取込' : 'スキャン'}: ${j.phase}` + (j.total > 0 ? ` (${pct.toFixed(0)}%)` : j.done ? ` ${fmtNum(j.done)}件` : '') + ` ・ 経過 ${j.elapsed}`;
+    const txt = `${({ excel: 'Excel取込', scan: 'スキャン', merge: 'DB統合' })[j.kind] || j.kind}: ${j.phase}` + (j.total > 0 ? ` (${pct.toFixed(0)}%)` : j.done ? ` ${fmtNum(j.done)}件` : '') + ` ・ 経過 ${j.elapsed}`;
     $('#job-text').textContent = txt;
     $('#job-prog').classList.toggle('indet', !(j.total > 0));
     $('#job-prog i').style.width = pct + '%';
@@ -558,7 +565,7 @@ Views.summary = {
         <div class="stat"><div class="k">ファイル数</div><div class="v">${fmtNum(sm.files)}</div></div>
         <div class="stat"><div class="k">合計サイズ</div><div class="v">${fmtSize(sm.totalSize)}</div></div>
         <div class="stat"><div class="k">最大階層</div><div class="v">${sm.maxDepth}</div></div>
-        <div class="stat"><div class="k">データ取得</div><div class="v" style="font-size:13px">${m.source === 'excel' ? 'Excel取込' : 'スキャン'}<br>${esc(m.scanned_at || m.imported_at || m.built_at)}</div></div>
+        <div class="stat"><div class="k">データ取得</div><div class="v" style="font-size:13px">${srcLabel(m)}<br>${esc(m.scanned_at || m.imported_at || m.merged_at || m.built_at)}</div></div>
       </div>
       ${m.source === 'excel' ? `<p class="hint">※ ${esc(m.size_note || '')}</p>` : ''}
       <div class="cols2">
@@ -569,7 +576,7 @@ Views.summary = {
         </div>
         <div>
           <div class="card"><h2>容量の大きいフォルダ(第1〜2階層)</h2><table class="t">
-            ${sm.topFolders.map(f => `<tr class="click" data-id="${f.id}"><td class="wrap">📁 ${esc(f.path.slice(m.root.length) || f.n)}</td><td class="num">${fmtSize(f.s)}</td><td>${bar(f.s, sm.totalSize || 1)}</td></tr>`).join('')}</table></div>
+            ${sm.topFolders.map(f => `<tr class="click" data-id="${f.id}"><td class="wrap">📁 ${esc(m.virtual === 'true' ? f.path : (f.path.slice(m.root.length) || f.n))}</td><td class="num">${fmtSize(f.s)}</td><td>${bar(f.s, sm.totalSize || 1)}</td></tr>`).join('')}</table></div>
           <div class="card"><h2>最終更新からの経過(ファイル)</h2><table class="t"><tr><th>経過</th><th class="num">件数</th><th class="num">サイズ</th><th></th></tr>
             ${sm.age.map(a => `<tr><td>${a.label}</td><td class="num">${fmtNum(a.count)}</td><td class="num">${fmtSize(a.size)}</td><td>${bar(a.count, maxAge)}</td></tr>`).join('')}</table></div>
           <div class="card"><h2>階層の深さ別の項目数</h2><table class="t"><tr><th>階層</th><th class="num">項目数</th><th class="num">ファイル容量</th><th></th></tr>
@@ -610,7 +617,7 @@ Views.tree = {
     this.model = new TreeModel($('#tr-dirs').checked);
     if (!this.grid) {
       this.grid = new Grid($('#tr-grid'), {
-        columns: cols({ key: 'name', label: '名前(ツリー)', w: 460, render: r => nameCell(r, true) }, 'kind', 'mtime', 'size', 'files', 'pathlen', 'warn', 'action', 'owner', 'memo'),
+        columns: this.columns(),
         rowClass,
         onSelect: rows => Panel.set(rows, this.grid),
         onToggle: guard((r, i) => this.toggle(i)),
@@ -621,6 +628,12 @@ Views.tree = {
           else if (!right && r.d > 0) { const pi = this.model.indexOf(r.p); if (pi >= 0) this.grid.moveTo(pi); }
         }),
       });
+      $('#tr-gauge').value = this.gaugeMode();
+      $('#tr-gauge').onchange = () => {
+        store.set('fm-gauge', $('#tr-gauge').value);
+        this.grid.cols = this.columns();
+        this.grid.renderHead(); this.grid.refresh();
+      };
       $('#tr-collapse').onclick = guard(() => this.load());
       $('#tr-expand').onclick = guard(async () => {
         const r = this.grid.selected()[0] || this.model.rows[0];
@@ -638,6 +651,23 @@ Views.tree = {
       $('#tr-path').onkeydown = e => { if (e.key === 'Enter') go(); };
     }
     this.loaded = false;
+  },
+  gaugeMode() { return store.get('fm-gauge', 'parent'); },
+  columns() {
+    const c = cols({ key: 'name', label: '名前(ツリー)', w: 460, render: r => nameCell(r, true) }, 'kind', 'mtime', 'size');
+    const mode = this.gaugeMode();
+    if (mode !== 'off') c.push({
+      key: 'gauge', w: 150, label: mode === 'root' ? 'サイズ比(全体)' : 'サイズ比(親フォルダ内)',
+      tip: mode === 'root' ? 'ルート全体のサイズに占める割合' : '1つ上のフォルダのサイズに占める割合',
+      render: r => this.gauge(r, mode),
+    });
+    return c.concat(cols('files', 'pathlen', 'warn', 'action', 'owner', 'memo'));
+  },
+  gauge(r, mode) {
+    const base = mode === 'root' ? (this.model.rows[0]?.s || 0) : r._ps;
+    const pct = base > 0 ? r.s / base * 100 : 0;
+    const label = r.s > 0 && pct < 0.1 ? '<0.1' : pct.toFixed(1);
+    return `<div class="gauge" title="${esc(fmtSize(r.s))} / ${esc(fmtSize(base))}"><div class="tr"><i style="width:${Math.min(100, pct).toFixed(2)}%"></i></div><span>${label}%</span></div>`;
   },
   async load() {
     await this.model.load();
@@ -944,6 +974,75 @@ Views.plan = {
   },
 };
 
+// ===== DB統合(マージ) =====
+const Merge = {
+  items: [], // {path, root, date, source, error}
+  async add(paths) {
+    paths = paths.map(p => p.trim().replace(/^"|"$/g, '')).filter(p => p && !this.items.some(x => x.path.toLowerCase() === p.toLowerCase()));
+    if (!paths.length) return;
+    const info = await api('/api/dbinfo', { paths });
+    info.forEach(i => { if (i.error) toast(`${i.path}: ${i.error}`, true); else this.items.push(i); });
+    this.render();
+  },
+  order() {
+    if ($('#mg-prefer').value !== 'newest') return this.items;
+    return [...this.items].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  },
+  render() {
+    const pri = new Map(this.order().map((x, i) => [x, i + 1]));
+    $('#mg-list').innerHTML = this.items.length ? `<tr><th>優先</th><th>DB</th><th>ルート</th><th>取得元</th><th>取得日時</th><th></th></tr>` +
+      this.items.map((x, i) => `<tr><td class="num">${pri.get(x)}</td><td title="${esc(x.path)}">📄 ${esc(x.path.split(/[\\/]/).pop())}</td><td class="wrap">${esc(x.root)}</td><td>${esc(srcLabel(x))}</td><td>${esc(x.date)}</td>
+        <td><button class="mini" data-mv="${i},-1" ${i === 0 ? 'disabled' : ''} title="上へ">↑</button> <button class="mini" data-mv="${i},1" ${i === this.items.length - 1 ? 'disabled' : ''} title="下へ">↓</button> <button class="mini danger" data-rm="${i}" title="一覧から外す">×</button></td></tr>`).join('')
+      : '<tr><td class="muted">統合するDBを2つ以上追加してください。</td></tr>';
+    $$('#mg-list [data-mv]').forEach(b => b.onclick = () => {
+      const [i, d] = b.dataset.mv.split(',').map(Number);
+      [this.items[i], this.items[i + d]] = [this.items[i + d], this.items[i]];
+      this.render();
+    });
+    $$('#mg-list [data-rm]').forEach(b => b.onclick = () => { this.items.splice(+b.dataset.rm, 1); this.render(); });
+  },
+  async pickSaved() {
+    const ps = await api('/api/projects');
+    if (!ps.length) return toast('保存済みのDBがありません', true);
+    modal(`<h2>統合するDBを選択</h2><table class="t">${ps.map((p, i) => `<tr><td><label><input type="checkbox" data-i="${i}" ${this.items.some(x => x.path === p.path) ? 'checked disabled' : ''}> 📄 ${esc(p.name)}</label></td><td class="num">${fmtSize(p.size)}</td><td>${esc(p.modified)}</td></tr>`).join('')}</table>`,
+      async m => { await this.add($$('input[data-i]:checked:not(:disabled)', m).map(c => ps[+c.dataset.i].path)); }, '追加');
+  },
+  init() {
+    $('#mg-add').onclick = guard(async () => { await this.add([$('#mg-path').value]); $('#mg-path').value = ''; });
+    $('#mg-path').onkeydown = e => { if (e.key === 'Enter') $('#mg-add').click(); };
+    $('#mg-ref').onclick = guard(async () => { const r = await api('/api/dialog', { kind: 'dbmulti' }); await this.add(r.paths || []); });
+    $('#mg-saved').onclick = guard(() => this.pickSaved());
+    $('#mg-prefer').onchange = () => this.render();
+    $('#mg-go').onclick = guard(async () => {
+      if (this.items.length < 2) return toast('統合するDBを2つ以上追加してください', true);
+      await api('/api/merge', { dbs: this.order().map(x => x.path), db: $('#mg-db').value, prefer: 'order' });
+      Job.watch();
+    });
+    this.render();
+  },
+};
+
+// ===== テーマ =====
+const Theme = {
+  modes: ['auto', 'light', 'dark'],
+  labels: { auto: '🌓 自動', light: '☀ ライト', dark: '🌙 ダーク' },
+  apply() {
+    const t = store.get('fm-theme', 'auto');
+    const dark = t === 'dark' || (t === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    $('#theme').textContent = this.labels[t] || this.labels.auto;
+  },
+  init() {
+    $('#theme').onclick = () => {
+      const t = store.get('fm-theme', 'auto');
+      store.set('fm-theme', this.modes[(this.modes.indexOf(t) + 1) % 3]);
+      this.apply();
+    };
+    matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => this.apply());
+    this.apply();
+  },
+};
+
 // ===== 起動 =====
 function initHome() {
   $$('[data-dialog]').forEach(b => b.onclick = guard(async () => {
@@ -966,6 +1065,8 @@ function initHome() {
 
 (async () => {
   initHome();
+  Merge.init();
+  Theme.init();
   $$('#nav button').forEach(b => b.onclick = () => show(b.dataset.view));
   await guard(refreshState)();
   if (S.state?.db) { dbOpened(); show('summary'); } else show('home');
