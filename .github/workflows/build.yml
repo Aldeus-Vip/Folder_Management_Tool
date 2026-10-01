@@ -1,0 +1,19 @@
+name: build
+on:
+  push:
+  pull_request:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+      - run: GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/FolderManager.exe ./cmd/foldermanager
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FolderManager-windows
+          path: dist/FolderManager.exe
