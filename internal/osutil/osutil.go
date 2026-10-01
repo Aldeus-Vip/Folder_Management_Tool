@@ -12,6 +12,7 @@ type DialogKind string
 const (
 	OpenExcel  DialogKind = "excel"
 	OpenDB     DialogKind = "db"
+	OpenDBs    DialogKind = "dbmulti" // 複数選択(改行区切りで返す)
 	SaveDB     DialogKind = "savedb"
 	PickFolder DialogKind = "folder"
 )

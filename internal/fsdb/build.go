@@ -30,6 +30,9 @@ type Builder struct {
 	Recs []Record
 	Sep  string
 	Meta map[string]string
+	// VirtualRoot: ルートが実在しない仮想フォルダ(共通の親がないDB同士の統合用)。
+	// このとき第1階層の Name はフルパスそのものとして扱う。
+	VirtualRoot bool
 }
 
 func NewBuilder(root, sep string) *Builder {
@@ -196,7 +199,7 @@ func (b *Builder) Finalize(ctx context.Context, dbPath string, prog Progress) er
 	for i := 0; i < n; i++ {
 		r := &recs[i]
 		f := r.Flags
-		if i > 0 {
+		if i > 0 && !(b.VirtualRoot && depth[i] == 1) {
 			f |= NameFlags(r.Name, r.IsDir)
 		}
 		if r.IsDir {
@@ -255,8 +258,8 @@ func (b *Builder) Finalize(ctx context.Context, dbPath string, prog Progress) er
 		relLen = relLen[:d]
 		var p string
 		var rl int
-		if d == 0 {
-			p = r.Name
+		if d == 0 || (d == 1 && b.VirtualRoot) {
+			p = r.Name // 仮想ルート直下はフルパスを名前に持ち、パス文字数はそこから数える
 		} else {
 			pp := paths[d-1]
 			if strings.HasSuffix(pp, b.Sep) {
@@ -265,7 +268,7 @@ func (b *Builder) Finalize(ctx context.Context, dbPath string, prog Progress) er
 				p = pp + b.Sep + r.Name
 			}
 			rl = relLen[d-1] + utf8.RuneCountInString(r.Name)
-			if d > 1 {
+			if d > 1 && !(d == 2 && b.VirtualRoot) {
 				rl++
 			}
 		}
@@ -301,6 +304,7 @@ func (b *Builder) Finalize(ctx context.Context, dbPath string, prog Progress) er
 		"built_at":   time.Now().Format("2006/01/02 15:04:05"),
 		"node_count": strconv.Itoa(n),
 		"version":    "1",
+		"virtual":    strconv.FormatBool(b.VirtualRoot),
 	}
 	for k, v := range b.Meta {
 		meta[k] = v
