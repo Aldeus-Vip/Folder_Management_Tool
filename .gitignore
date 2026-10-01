@@ -1,0 +1,6 @@
+dist/
+projects/
+*.db
+*.db-wal
+*.db-shm
+*.building
