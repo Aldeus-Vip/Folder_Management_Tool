@@ -9,8 +9,16 @@ import (
 	"time"
 )
 
-// Actions は注記で選べるアクション(UIの選択肢と同じ)。
-var Actions = []string{"残す", "要確認", "削除", "アーカイブ", "移動", "名前変更"}
+// ActionLabel はアクションの表示名。
+func ActionLabel(a string) string {
+	switch a {
+	case ActDelete:
+		return "削除"
+	case ActMove:
+		return "移動"
+	}
+	return ""
+}
 
 func fmtTime(t int64) string {
 	if t <= 0 {
@@ -50,11 +58,12 @@ func WarnLabels(n *Node, st Settings) string {
 // WriteCSV は検索結果をExcelで開けるCSV(UTF-8 BOM付き)で書き出す。
 func (s *Store) WriteCSV(w io.Writer, f Filter) error {
 	st := s.Settings()
+	r := s.Rules()
 	io.WriteString(w, "\uFEFF")
 	cw := csv.NewWriter(w)
 	cw.UseCRLF = true
 	cw.Write([]string{"ID", "種別", "名前", "拡張子", "サイズ(KB)", "更新日時", "階層", "ファイル数(配下)", "パス文字数", "警告",
-		"アクション", "担当", "新しい名前", "移動先", "メモ", "フルパス"})
+		"アクション", "継承(親フォルダの設定)", "移動先(整理後)", "新しい名前", "期限", "タグ", "メモ", "作業者", "フルパス"})
 	err := s.SearchEach(f, func(n *Node) error {
 		kind := "ファイル"
 		files := ""
@@ -62,9 +71,24 @@ func (s *Store) WriteCSV(w io.Writer, f Filter) error {
 			kind = "フォルダ"
 			files = strconv.FormatInt(n.Files, 10)
 		}
+		dest := ""
+		if n.Action == ActMove {
+			name := n.Name
+			if n.NewName != "" {
+				name = n.NewName
+			}
+			dest = joinV(r.RootName, n.VPath, name)
+		}
+		inh := ""
+		if n.Action == "" && n.IAction != "" {
+			inh = ActionLabel(n.IAction)
+			if n.IVPath != "" {
+				inh += " → " + n.IVPath
+			}
+		}
 		return cw.Write([]string{strconv.FormatInt(n.ID, 10), kind, n.Name, n.Ext, strconv.FormatFloat(float64(n.Size)/1024, 'f', 1, 64),
 			fmtTime(n.Mtime), strconv.Itoa(n.Depth), files, strconv.Itoa(n.PathLen), WarnLabels(n, st),
-			n.Action, n.Owner, n.NewName, n.Dest, n.Memo, n.Path})
+			ActionLabel(n.Action), inh, dest, n.NewName, n.Due, strings.Join(n.Tags, ", "), n.Memo, n.Editor, n.Path})
 	})
 	cw.Flush()
 	if err != nil {
@@ -73,49 +97,63 @@ func (s *Store) WriteCSV(w io.Writer, f Filter) error {
 	return cw.Error()
 }
 
+func joinV(parts ...string) string {
+	var out []string
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, `\`)
+}
+
 func psQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
 
-// WritePlanScript はアクション(削除/アーカイブ/移動/名前変更)を実行するPowerShellスクリプトを生成する。
+// WritePlanScript は整理計画(削除・移動)を実行するPowerShellスクリプトを生成する。
 // 既定はドライラン(-Execute を付けたときだけ実際に変更)。
 func (s *Store) WritePlanScript(w io.Writer) error {
-	meta, _ := s.Meta()
-	root := meta["root"]
-	sep := meta["sep"]
-	virtual := meta["virtual"] == "true"
-	archive := root + "_Archive"
-	if virtual {
-		archive = "D:\\Archive"
+	if err := s.ensureIndex(); err != nil {
+		return err
 	}
+	meta, _ := s.Meta()
+	r := s.Rules()
 	var ns []Node
-	err := s.SearchEach(Filter{Action: "any"}, func(n *Node) error {
-		if n.Action == "削除" || n.Action == "アーカイブ" || n.Action == "移動" || n.Action == "名前変更" {
+	if err := s.SearchEach(Filter{State: "own"}, func(n *Node) error {
+		if n.Action != "" {
 			ns = append(ns, *n)
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	vfolders, err := s.VTreeAll()
 	if err != nil {
 		return err
+	}
+	base := r.BasePath
+	if base == "" {
+		base = "D:\\整理後"
 	}
 	var b strings.Builder
 	b.WriteString("\uFEFF")
 	fmt.Fprintf(&b, `# ==========================================================
-# フォルダ整理 実行計画スクリプト (FolderManager が生成)
-#   生成日時 : %s
-#   対象ルート: %s
-#   件数      : %d 件
+# フォルダ整理 実行スクリプト (FolderManager が生成)
+#   生成日時   : %s
+#   対象ルート : %s
+#   整理後ルート: %s (-TargetRoot で変更可)
+#   件数       : %d 件(削除・移動)
 #
 # ■ 使い方
 #   1) まずはそのまま実行してください(ドライラン: 何も変更しません)。
 #        powershell -ExecutionPolicy Bypass -File .\このファイル.ps1
-#      画面とログCSVで「何が起きるか」を確認できます。
-#   2) 問題がなければ -Execute を付けて実行すると実際に変更されます。
+#   2) 画面とログCSVを確認し、問題なければ -Execute を付けて実行します。
 #        powershell -ExecutionPolicy Bypass -File .\このファイル.ps1 -Execute
-#   ※「削除」は完全削除です(ごみ箱に入りません)。不安な場合は
-#     アクションを「アーカイブ」にして、退避先へ移動する運用を推奨します。
+#   ※「削除」は完全削除です(ごみ箱に入りません)。
+#   ※ 子→親の順に実行します(親フォルダを移動する前に、配下の個別の移動・削除を済ませるため)。
 # ==========================================================
 param(
   [switch]$Execute,
-  [string]$ArchiveRoot = %s   # アーカイブ先(ルートからの相対パス構造を保って移動)
+  [string]$TargetRoot = %s
 )
 $ErrorActionPreference = 'Stop'
 $DryRun = -not $Execute
@@ -127,73 +165,44 @@ function Write-Log($op, $src, $dst, $result) {
   Write-Host ("[{0}] {1}: {2} {3}" -f $result, $op, $src, $(if ($dst) { "-> $dst" } else { '' })) -ForegroundColor $color
 }
 function Invoke-Step($op, $src, $dst, [scriptblock]$action) {
-  if (-not (Test-Path -LiteralPath $src)) { Write-Log $op $src $dst 'NOTFOUND'; return }
+  if ($src -and -not (Test-Path -LiteralPath $src)) { Write-Log $op $src $dst 'NOTFOUND'; return }
   if ($DryRun) { Write-Log $op $src $dst 'DRYRUN'; return }
-  try {
-    & $action
-    Write-Log $op $src $dst 'OK'
-  } catch { Write-Log $op $src $dst ('ERROR: ' + $_.Exception.Message) }
+  try { & $action; Write-Log $op $src $dst 'OK' } catch { Write-Log $op $src $dst ('ERROR: ' + $_.Exception.Message) }
 }
-function Ensure-Parent($p) {
-  $parent = Split-Path -LiteralPath $p -Parent
-  if ($parent -and -not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-}
+function Ensure-Dir($p) { if (-not (Test-Path -LiteralPath $p)) { New-Item -ItemType Directory -Path $p -Force | Out-Null } }
+function T($rel) { if ($rel) { Join-Path $TargetRoot $rel } else { $TargetRoot } }
 if ($DryRun) { Write-Host '*** ドライラン(変更しません)。実行するには -Execute を付けてください ***' -ForegroundColor Cyan }
 
-`, time.Now().Format("2006/01/02 15:04:05"), root, len(ns), psQuote(archive))
-
-	// 親フォルダが削除/移動/アーカイブされる項目は、親の操作に含まれるので個別には実行しない。
-	// 子→親の順(ID降順)で実行し、親の名前変更より先に子の操作が終わるようにする。
-	type rng struct{ id, end int64 }
-	var consumed []rng
-	skip := map[int64]bool{}
-	for _, n := range ns {
-		for len(consumed) > 0 && consumed[len(consumed)-1].end < n.ID {
-			consumed = consumed[:len(consumed)-1]
-		}
-		if len(consumed) > 0 {
-			skip[n.ID] = true
-			continue
-		}
-		if n.Action != "名前変更" {
-			consumed = append(consumed, rng{n.ID, n.End})
+# ---- 整理後のフォルダ構成を作成 ----
+`, time.Now().Format("2006/01/02 15:04:05"), meta["root"], base, len(ns), psQuote(base))
+	for _, v := range vfolders {
+		if v.Kind == "vdir" && v.Path != "" {
+			fmt.Fprintf(&b, "Invoke-Step 'フォルダ作成' '' (T %s) { Ensure-Dir (T %s) }\n", psQuote(v.Path), psQuote(v.Path))
 		}
 	}
+	b.WriteString("\n# ---- 削除・移動(子→親の順) ----\n")
 	for i := len(ns) - 1; i >= 0; i-- {
 		n := ns[i]
 		src := psQuote(n.Path)
-		fmt.Fprintf(&b, "# [%s] %s", n.Action, n.Path)
+		fmt.Fprintf(&b, "# [%s] %s", ActionLabel(n.Action), n.Path)
 		if n.Memo != "" {
 			fmt.Fprintf(&b, "  (メモ: %s)", strings.ReplaceAll(n.Memo, "\n", " "))
 		}
-		b.WriteString("\n")
-		if skip[n.ID] {
-			b.WriteString("#   → 親フォルダの操作に含まれるためスキップ\n\n")
-			continue
+		if n.Due != "" {
+			fmt.Fprintf(&b, "  (期限: %s)", n.Due)
 		}
+		b.WriteString("\n")
 		switch n.Action {
-		case "削除":
+		case ActDelete:
 			fmt.Fprintf(&b, "Invoke-Step '削除' %s '' { Remove-Item -LiteralPath %s -Recurse -Force }\n", src, src)
-		case "アーカイブ":
-			rel := strings.TrimPrefix(strings.TrimPrefix(n.Path, root), sep)
-			if virtual { // 統合DB(共通の親なし): \\srv\share\x → srv\share\x、C:\x → C\x
-				rel = strings.ReplaceAll(strings.TrimLeft(n.Path, sep), ":", "")
+		case ActMove:
+			name := n.Name
+			if n.NewName != "" {
+				name = n.NewName
 			}
-			fmt.Fprintf(&b, "$dst = Join-Path $ArchiveRoot %s\nInvoke-Step 'アーカイブ' %s $dst { Ensure-Parent $dst; Move-Item -LiteralPath %s -Destination $dst }\n", psQuote(rel), src, src)
-		case "移動":
-			if n.Dest == "" {
-				b.WriteString("#   → 移動先が未入力のためスキップ\n\n")
-				continue
-			}
-			fmt.Fprintf(&b, "$dst = Join-Path %s %s\nInvoke-Step '移動' %s $dst { Ensure-Parent $dst; Move-Item -LiteralPath %s -Destination $dst }\n", psQuote(n.Dest), psQuote(n.Name), src, src)
-		case "名前変更":
-			if n.NewName == "" {
-				b.WriteString("#   → 新しい名前が未入力のためスキップ\n\n")
-				continue
-			}
-			fmt.Fprintf(&b, "Invoke-Step '名前変更' %s %s { Rename-Item -LiteralPath %s -NewName %s }\n", src, psQuote(n.NewName), src, psQuote(n.NewName))
+			rel := joinV(n.VPath, name)
+			fmt.Fprintf(&b, "$dst = T %s\nInvoke-Step '移動' %s $dst { Ensure-Dir (Split-Path -LiteralPath $dst -Parent); Move-Item -LiteralPath %s -Destination $dst }\n", psQuote(rel), src, src)
 		}
-		b.WriteString("\n")
 	}
 	b.WriteString("Write-Host ('完了。ログ: ' + $log)\n")
 	_, err = io.WriteString(w, strings.ReplaceAll(b.String(), "\n", "\r\n"))

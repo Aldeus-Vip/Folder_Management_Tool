@@ -30,7 +30,9 @@ type Summary struct {
 	TopFolders []Node            `json:"topFolders"`
 	TopExts    []Count           `json:"topExts"`
 	Actions    []Count           `json:"actions"`
-	Owners     []Count           `json:"owners"`
+	Editors    []Count           `json:"editors"`
+	Tags       []Count           `json:"tags"`
+	Progress   *PlanProgress     `json:"progress"`
 }
 
 // Summary は全体の集計を返す。重い静的部分はキャッシュし、注記(アクション/担当)の集計だけ毎回取り直す。
@@ -50,10 +52,16 @@ func (s *Store) Summary() (*Summary, error) {
 	}
 	sm := *cached
 	var err error
-	if sm.Actions, err = s.counts(`SELECT t.action, t.action, count(*), COALESCE(sum(n.size),0) FROM notes t JOIN nodes n ON n.id=t.node_id WHERE t.action!='' GROUP BY t.action ORDER BY count(*) DESC`); err != nil {
+	if sm.Actions, err = s.counts(`SELECT p.action, p.action, count(*), 0 FROM plan p WHERE p.action!='' GROUP BY p.action ORDER BY count(*) DESC`); err != nil {
 		return nil, err
 	}
-	if sm.Owners, err = s.counts(`SELECT t.owner, t.owner, count(*), COALESCE(sum(n.size),0) FROM notes t JOIN nodes n ON n.id=t.node_id WHERE t.owner!='' GROUP BY t.owner ORDER BY count(*) DESC`); err != nil {
+	if sm.Editors, err = s.counts(`SELECT p.editor, p.editor, count(*), 0 FROM plan p WHERE p.editor!='' GROUP BY p.editor ORDER BY count(*) DESC`); err != nil {
+		return nil, err
+	}
+	if sm.Tags, err = s.AllTags(); err != nil {
+		return nil, err
+	}
+	if sm.Progress, err = s.Progress(); err != nil {
 		return nil, err
 	}
 	return &sm, nil

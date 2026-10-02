@@ -46,7 +46,7 @@ func ReadMergeSource(path string) (*MergeSource, error) {
 //   - 同じパスが複数のDBにある場合は優先度の高いDBの情報を採用する
 //     (preferNewest=true: データ取得日時が新しいDB優先 / false: 指定順で先のDB優先)
 //   - 共通の親フォルダがあればそれをルートにし、無ければ仮想ルートの下に並べる
-//   - アクション・担当・メモ(注記)も同じ優先順で引き継ぐ
+//   - 整理計画(仮想フォルダ・アクション・タグ)も同じ優先順で引き継ぐ
 func Merge(ctx context.Context, dbs []string, dbPath string, preferNewest bool, prog fsdb.Progress) (*Result, error) {
 	if prog == nil {
 		prog = func(string, int64, int64) {}
@@ -216,18 +216,18 @@ func Merge(ctx context.Context, dbs []string, dbPath string, preferNewest bool, 
 		return nil, err
 	}
 
-	// 注記の引継ぎ: 優先度の低いDBから順に上書きし、最後に優先度の高いDBの内容が残るようにする
-	prog("注記を引継ぎ中", 0, 0)
+	// 整理計画の引継ぎ: 優先度の低いDBから順に上書きし、最後に優先度の高いDBの内容が残るようにする
+	prog("アクションを引継ぎ中", 0, 0)
 	st, err := fsdb.Open(dbPath)
 	if err != nil {
 		return nil, err
 	}
 	var notes int64
 	for i := len(srcs) - 1; i >= 0; i-- {
-		n, err := st.ImportNotes(srcs[i].Path)
+		n, err := st.ImportPlans(srcs[i].Path)
 		if err != nil {
 			st.Close()
-			return nil, fmt.Errorf("注記の引継ぎに失敗(%s): %w", filepath.Base(srcs[i].Path), err)
+			return nil, fmt.Errorf("アクションの引継ぎに失敗(%s): %w", filepath.Base(srcs[i].Path), err)
 		}
 		notes += n
 	}
@@ -249,7 +249,7 @@ func Merge(ctx context.Context, dbs []string, dbPath string, preferNewest bool, 
 		res.Warnings = append(res.Warnings, fmt.Sprintf("フォルダ/ファイルの種別が食い違うパス %d 件は、優先度の高いDBの情報を採用しました", conflict))
 	}
 	if notes > 0 {
-		res.Warnings = append(res.Warnings, fmt.Sprintf("注記(アクション・担当・メモ)を %d 件引継ぎました", notes))
+		res.Warnings = append(res.Warnings, fmt.Sprintf("アクションを %d 件引継ぎました", notes))
 	}
 	return res, nil
 }

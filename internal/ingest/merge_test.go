@@ -39,8 +39,7 @@ func TestMergeScans(t *testing.T) {
 	// 旧A のDBに注記を付けておく → 統合後に引き継がれる
 	sa, _ := fsdb.Open(dbA)
 	id, _ := sa.FindPath(filepath.Join(base, "share/A/sub"))
-	act := "アーカイブ"
-	sa.SetNotes([]int64{id}, fsdb.NoteFields{Action: &act})
+	sa.PlanDelete([]int64{id}, "A")
 	sa.Close()
 
 	res, err := Merge(context.Background(), []string{dbA, dbB, dbAll}, out, true, nil)
@@ -64,7 +63,7 @@ func TestMergeScans(t *testing.T) {
 		t.Fatalf("a1 size=%d", n.Size)
 	}
 	sub, _ := s.FindPath(filepath.Join(base, "share/A/sub"))
-	if n, _ := s.Node(sub); n.Action != "アーカイブ" {
+	if n, _ := s.Node(sub); n.Action != fsdb.ActDelete {
 		t.Fatalf("note not carried: %+v", n)
 	}
 	// 指定順優先なら古い a.db の値になる
@@ -83,16 +82,8 @@ func TestMergeScans(t *testing.T) {
 func TestMergeVirtualRoot(t *testing.T) {
 	dir := t.TempDir()
 	mkx := func(name, root string) string {
-		x := filepath.Join(dir, name+".xlsx")
-		writeXlsx(t, x, [][]string{header,
-			{"r", "", "", "フォルダ", "2024/05/01 10:00", "0", "0", "", "", root},
-			{"", "x", "", "フォルダ", "2024/05/01 10:00", "0", "0", "", "", root + `\資料`},
-			{"", "", "x", "ファイル", "2024/05/01 10:00", "1.0", "0", "", "", root + `\資料\a.txt`},
-		}, false)
 		db := filepath.Join(dir, name+".db")
-		if _, err := ImportExcel(context.Background(), x, db, nil); err != nil {
-			t.Fatal(err)
-		}
+		buildDB(t, db, root, `資料\a.txt`)
 		return db
 	}
 	d1 := mkx("s1", `\\srv1\share\部署A`)
@@ -104,7 +95,7 @@ func TestMergeVirtualRoot(t *testing.T) {
 	}
 	s, _ := fsdb.Open(out)
 	defer s.Close()
-	kids, _ := s.Children(1, false)
+	kids, _ := s.Children(1, false, false)
 	var names []string
 	for _, k := range kids {
 		names = append(names, k.Path)
