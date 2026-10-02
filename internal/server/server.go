@@ -116,6 +116,7 @@ func (a *App) Handler() http.Handler {
 		"GET /api/tags":      a.withStore(a.apiTags),
 		"POST /api/hash":     a.withStore(a.apiHash),
 		"POST /api/reveal":   a.withStore(a.apiReveal),
+		"POST /api/openfile": a.withStore(a.apiOpenFile),
 		// 仮想フォルダ構成(整理後)
 		"GET /api/vnode":     a.withStore(a.apiVNode),
 		"GET /api/vchildren": a.withStore(a.apiVChildren),

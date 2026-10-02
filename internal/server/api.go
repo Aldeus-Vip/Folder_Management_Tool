@@ -134,6 +134,28 @@ func (a *App) apiHash(r *http.Request, s *fsdb.Store) (any, error) {
 	return out, nil
 }
 
+// apiOpenFile はファイルを既定のアプリで開く(中身を確認するため。このPCからアクセスできる場合のみ)。
+func (a *App) apiOpenFile(r *http.Request, s *fsdb.Store) (any, error) {
+	var req struct{ ID int64 }
+	if err := decode(r, &req); err != nil {
+		return nil, err
+	}
+	n, err := s.Node(req.ID)
+	if err != nil {
+		return nil, err
+	}
+	if n.IsDir {
+		return nil, badRequest("フォルダは開けません")
+	}
+	if st, err := os.Stat(n.Path); err != nil || st.IsDir() {
+		return nil, badRequest("このPCからはアクセスできません(移動・削除済み、または権限がない可能性があります): %s", n.Path)
+	}
+	if err := osutil.OpenFile(n.Path); err != nil {
+		return nil, badRequest("%v", err)
+	}
+	return map[string]any{}, nil
+}
+
 func (a *App) apiReveal(r *http.Request, s *fsdb.Store) (any, error) {
 	var req struct{ ID int64 }
 	if err := decode(r, &req); err != nil {

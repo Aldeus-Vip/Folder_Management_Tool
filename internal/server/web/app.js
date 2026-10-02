@@ -547,6 +547,19 @@ async function afterEdit() {
   Panel.render();
 }
 
+// ===== ファイルを既定のアプリで開く(「これって何だっけ？」をすぐ確認する) =====
+// プログラムやスクリプトはダブルクリックで誤って実行しないよう確認する
+const RISKY = /^(exe|com|bat|cmd|msi|msp|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|hta|scr|pif|lnk|reg|jar|cpl|inf|url|application|appref-ms)$/;
+async function openFile(r) {
+  if (!r || r.dir || r.kind === 'vdir' || typeof r.id !== 'number') return;
+  const go = async () => { await api('/api/openfile', { id: r.id }); toast(`「${r.node?.n ?? r.n}」を開きました`); };
+  if (RISKY.test(r.x || '')) {
+    return modal(`<h2>このファイルを開きますか？</h2><p>「${esc(r.node?.n ?? r.n)}」はプログラムまたはスクリプト(.${esc(r.x)})です。開くと<b>実行されます</b>。</p>
+      <p class="hint">中身を確認したいだけの場合は「Windowsで開く」(エクスプローラーで場所を表示)を使ってください。</p>`, go, '実行して開く');
+  }
+  await go();
+}
+
 // ===== 仮想フォルダの選択ダイアログ(移動先を整理後のツリーから選ぶ) =====
 const VPicker = {
   pick(title) {
@@ -620,7 +633,8 @@ const Panel = {
         ・フォルダに設定すると配下すべてに及びます(配下に個別の設定があればそちらが優先)<br>
         ・Ctrl/Shift+クリックで複数選択 → まとめて設定<br>
         ・左の項目を右の仮想フォルダへドラッグしても移動できます<br>
-        ・キー: Del=削除 / M=移動 / Backspace=解除</p>`;
+        ・キー: Del=削除 / M=移動 / Backspace=解除<br>
+        ・ファイルをダブルクリック(またはEnter)で、既定のアプリで開いて中身を確認できます</p>`;
       return;
     }
     if (rows.length === 1 && rows[0].kind === 'vdir') return this.renderV(rows[0]);
@@ -641,6 +655,7 @@ const Panel = {
         <dt>警告・ヒント</dt><dd>${warnHTML(r.node || r) || '<span class="muted">なし</span>'}</dd>
         <dt>現在の設定</dt><dd>${st}${r.ed ? ` <span class="muted">(${esc(r.ed)})</span>` : ''}</dd></dl>
         <div class="btns">
+          ${r.dir ? '' : '<button data-go="open" title="既定のアプリで開く(ダブルクリックでも開けます)">📂 ファイルを開く</button>'}
           <button data-go="tree">現在のツリーで表示</button>
           ${r.dir ? '<button data-go="under">この配下を検索</button><button data-go="dups">配下の重複</button>' : ''}
           <button data-go="copy">パスをコピー</button>
@@ -710,6 +725,7 @@ const Panel = {
     if (a === 'move') return Plan.move(rows);
   },
   async go(where, r) {
+    if (where === 'open') return openFile(r);
     if (where === 'tree') return show('organize', { reveal: r.id });
     if (where === 'under') return show('list', { under: r.id, underPath: r.path });
     if (where === 'dups') return show('dups', { under: r.id, underPath: r.path });
@@ -1114,7 +1130,7 @@ Views.organize = {
       columns: this.columns(), rowClass, draggable: true,
       onSelect: rows => Panel.set(rows, this.src),
       onToggle: guard((r, i) => this.toggle(this.model, this.src, i)),
-      onOpen: guard((r, i) => r.dir ? this.toggle(this.model, this.src, i) : null),
+      onOpen: guard((r, i) => r.dir ? this.toggle(this.model, this.src, i) : openFile(r)),
       onArrow: guard(async (r, i, right) => {
         if (right && r._has && !r._open) await this.toggle(this.model, this.src, i);
         else if (!right && r._open) await this.toggle(this.model, this.src, i);
@@ -1138,7 +1154,7 @@ Views.organize = {
         if (rows.length === 1 && rows[0].kind === 'vdir') { setVTarget(rows[0]); this.vt.render(); }
       },
       onToggle: guard((r, i) => this.toggle(this.vmodel, this.vt, i)),
-      onOpen: guard((r, i) => r._has ? this.toggle(this.vmodel, this.vt, i) : null),
+      onOpen: guard((r, i) => r.kind === 'file' ? openFile(r) : r._has ? this.toggle(this.vmodel, this.vt, i) : null),
       onArrow: guard(async (r, i, right) => { if (r._has && right !== !!r._open) await this.toggle(this.vmodel, this.vt, i); }),
       onKeyAction: (k) => {
         const v = S.sel[0];
@@ -1267,7 +1283,7 @@ Views.list = {
         columns: cols({ key: 'name', label: '名前', w: 240, sort: true, render: r => nameCell(r, false) }, 'depth', 'kind', 'ext', 'mtime', 'size', 'action', 'tags', 'due', 'warn', 'path'),
         rowClass,
         onSelect: rows => Panel.set(rows, this.grid),
-        onOpen: r => Panel.go('tree', r),
+        onOpen: guard(r => r.dir ? Panel.go('tree', r) : openFile(r)),
         onSort: () => this.search(),
         onKeyAction: k => {
           if (k === 'Delete') { guard(() => Plan.delete(S.sel))(); return true; }
@@ -1394,6 +1410,7 @@ Views.dups = {
     $('#dp-prev').onclick = guard(() => { this.off -= 50; return this.load(); });
     $('#dp-next').onclick = guard(() => { this.off += 50; return this.load(); });
     if (this.under) $('#dp-all').onclick = guard(() => { this.under = null; this.off = 0; return this.load(); });
+    $$('.dupg .m[data-id]', el).forEach(m => m.ondblclick = guard(() => openFile(d.groups[+m.dataset.g].members.find(x => x.id === +m.dataset.id))));
     $$('.dupg .m[data-id]', el).forEach(m => m.onclick = e => {
       const g = d.groups[+m.dataset.g], r = g.members.find(x => x.id === +m.dataset.id);
       const sel = (e.ctrlKey || e.metaKey) ? (S.sel.some(s => s.id === r.id) ? S.sel.filter(s => s.id !== r.id) : [...S.sel, r]) : [r];
@@ -1441,7 +1458,7 @@ Views.plan = {
         columns: cols('action', { key: 'name', label: '名前', w: 220, sort: true, render: r => nameCell(r, false) }, 'tags', 'due', 'memo', 'editor', 'size', 'mtime', 'path'),
         rowClass,
         onSelect: rows => Panel.set(rows, this.grid),
-        onOpen: r => Panel.go('tree', r),
+        onOpen: guard(r => r.dir ? Panel.go('tree', r) : openFile(r)),
         onSort: () => this.load(true),
       });
       this.grid.setEmpty('アクションはまだありません');

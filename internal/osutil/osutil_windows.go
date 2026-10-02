@@ -42,6 +42,8 @@ var (
 	procGetSystemMetrics    = user32.NewProc("GetSystemMetrics")
 	procSetLayeredAttrs     = user32.NewProc("SetLayeredWindowAttributes")
 	procMessageBoxW         = user32.NewProc("MessageBoxW")
+	procShellExecuteW       = shell32.NewProc("ShellExecuteW")
+	procAllowSetFG          = user32.NewProc("AllowSetForegroundWindow")
 	procGetCurrentThreadId  = kernel32.NewProc("GetCurrentThreadId")
 )
 
@@ -288,6 +290,32 @@ func showDialog(kind DialogKind, initial string) (string, error) {
 
 func OpenBrowser(url string) error {
 	return hidden(exec.Command("rundll32", "url.dll,FileProtocolHandler", url)).Start()
+}
+
+// OpenFile はファイルを既定のアプリ(拡張子に関連付けられたアプリ)で開く。
+// バックグラウンドのこのプロセスから起動すると、アプリがブラウザの裏に開いてしまうため、
+// ダイアログと同じく一時的に前面のウィンドウを作ってから起動し、起動したアプリに前面表示を許可する。
+func OpenFile(path string) error {
+	ch := make(chan uintptr, 1)
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		owner := ownerWindow()
+		procAllowSetFG.Call(^uintptr(0)) // ASFW_ANY
+		r, _, _ := procShellExecuteW.Call(owner, uintptr(unsafe.Pointer(u16("open"))), uintptr(unsafe.Pointer(u16(path))), 0, 0, 1 /* SW_SHOWNORMAL */)
+		if owner != 0 {
+			procDestroyWindow.Call(owner)
+		}
+		ch <- r
+	}()
+	r := <-ch
+	if r <= 32 {
+		if r == 31 { // SE_ERR_NOASSOC
+			return fmt.Errorf("この種類のファイルを開くアプリが設定されていません")
+		}
+		return fmt.Errorf("ファイルを開けませんでした(エラー %d)", r)
+	}
+	return nil
 }
 
 // Reveal はエクスプローラーで項目を選択した状態で開く。
