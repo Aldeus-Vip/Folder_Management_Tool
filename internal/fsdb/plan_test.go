@@ -115,7 +115,7 @@ func TestPlanInheritanceAndRemaining(t *testing.T) {
 		}
 	}
 	// 処理済みを非表示
-	kids2, _ := s.Children(1, false, true)
+	kids2, _ := s.Children(1, false, true, nil)
 	for _, c := range kids2 {
 		if c.Name == "経理" {
 			t.Fatal("planned folder should be hidden")
@@ -221,6 +221,8 @@ func TestActionMerge(t *testing.T) {
 	b.PlanMove([]int64{ids["総務"], ids["readme.txt"]}, nv, "総務部_佐藤")
 	b.VRename(shared, "共有", "総務部_佐藤")
 	a.VRename(shared, "共用", "経理部_山田")
+	a.PlanOwner([]int64{ids[`経理\2023`]}, "山田", "経理部_山田") // 担当も統合される
+	b.PlanHold([]int64{ids[`総務\古い`]}, "総務部_佐藤")
 	a.Close()
 	b.Close()
 
@@ -250,6 +252,12 @@ func TestActionMerge(t *testing.T) {
 	}
 	if n := node(t, m, ids["総務"]); n.Action != ActMove || n.VPath != "総務" {
 		t.Fatalf("総務: %+v", n)
+	}
+	if n := node(t, m, ids[`経理\2023`]); n.Owner != "山田" {
+		t.Fatalf("owner: %+v", n)
+	}
+	if n := node(t, m, ids[`総務\古い`]); n.Action != ActHold {
+		t.Fatalf("hold: %+v", n)
 	}
 	if n := node(t, m, ids["readme.txt"]); n.Action != ActMove {
 		t.Fatalf("readme (B chosen): %+v", n)
@@ -384,11 +392,18 @@ func TestAlias(t *testing.T) {
 	}
 }
 
-// 第3階層までは「数字3桁_名前」、ファイルは置けない
+// 第3階層までは「数字3桁_名前」、ファイルは置けない(カスタムルール)
+func topRules(d int, mode string) []CustomRule {
+	return []CustomRule{
+		{Cat: "整頓", Mode: mode, Kind: "dir", DepthOp: "le", Depth: d, Must: Cond{"format", "num3"}},
+		{Cat: "整頓", Mode: mode, Kind: "file", DepthOp: "le", Depth: d, Must: Cond{"forbid", ""}},
+	}
+}
+
 func TestTopRule(t *testing.T) {
 	s, ids := testDB(t)
 	r := s.Rules()
-	r.TopDepth, r.TopFormat, r.TopNameMode, r.TopFileMode = 3, "num3", "block", "block"
+	r.Custom = topRules(3, "block")
 	r.MaxDepth = 8
 	if err := s.SaveRules(r); err != nil {
 		t.Fatal(err)
@@ -422,14 +437,185 @@ func TestTopRule(t *testing.T) {
 		t.Fatalf("folder depth4: %+v", rep)
 	}
 	// ルールを後から厳しくした場合の違反一覧(第4階層まで → c の下のファイル・名前が違反)
-	r.TopDepth = 4
+	r.Custom = topRules(4, "block")
 	s.SaveRules(r)
-	vs, err := s.TopRuleViolations()
+	vs, err := s.RuleViolations()
 	if err != nil || len(vs) < 2 {
 		t.Fatalf("violations: %+v %v", vs, err)
 	}
 	// 仮想フォルダの移動: c(030_2024年度)をルート直下へ → 中のファイルが第2階層になり違反
 	if is, _ := s.VMove(c, VRoot, "x"); is == nil || len(is.Blocks) == 0 {
 		t.Fatalf("vmove: %+v", is)
+	}
+}
+
+// 旧バージョンの上位階層ルールはカスタムルールに移し替える
+func TestLegacyTopRule(t *testing.T) {
+	s, _ := testDB(t)
+	s.SetMeta(map[string]string{"vrules": `{"rootName":"新","maxDepth":6,"depthMode":"block","pathLimit":250,"pathMode":"block","maxItems":100,"itemsMode":"warn","badName":"block","copyName":"warn","tagRequired":"off","topDepth":2,"topFormat":"custom","topPattern":"^[0-9]{2}-.+$","topNameMode":"warn","topFileMode":"block"}`})
+	r := s.Rules()
+	if len(r.Custom) != 2 || r.Custom[0].Must.Op != "regex" || r.Custom[0].Depth != 2 || r.Custom[1].Mode != "block" || r.RootName != "新" {
+		t.Fatalf("migrated: %+v", r)
+	}
+	s.SetMeta(map[string]string{"vrules": `{"rootName":"新","maxDepth":6,"depthMode":"block","pathLimit":250,"pathMode":"block","maxItems":100,"itemsMode":"warn","badName":"block","copyName":"warn","tagRequired":"off"}`})
+	if r := s.Rules(); len(r.Custom) != len(DefaultCustomRules) {
+		t.Fatalf("defaults: %+v", r.Custom)
+	}
+}
+
+func TestCustomRules(t *testing.T) {
+	s, ids := testDB(t)
+	r := s.Rules()
+	r.Custom = []CustomRule{
+		{Cat: "清掃", Mode: "block", Kind: "dir", Must: Cond{"notcontains", "古い, OLD"}},
+		{Cat: "清潔", Mode: "warn", Kind: "any", DepthOp: "ge", Depth: 2, Must: Cond{"nochars", "＃ &"}},
+		{Cat: "整頓", Mode: "warn", Kind: "dir", DepthOp: "eq", Depth: 1, When: Cond{"suffix", "部"}, Must: Cond{"haschild", "規定|SOP, 契約"}},
+		{Cat: "整頓", Mode: "block", Kind: "file", Must: Cond{"maxlen", "8"}},
+	}
+	if err := s.SaveRules(r); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveRules(Rules{MaxDepth: 5, PathLimit: 100, MaxItems: 10, DepthMode: "off", PathMode: "off", ItemsMode: "off", BadName: "off", CopyName: "off", TagNeed: "off",
+		Custom: []CustomRule{{Mode: "warn", Kind: "file", Must: Cond{"haschild", "a"}}}}); err == nil {
+		t.Fatal("haschild on files should be rejected")
+	}
+	if _, is, _ := s.VCreate(VRoot, "old資料", "x"); len(is.Blocks) == 0 {
+		t.Fatal("OLD (case-insensitive) should be blocked")
+	}
+	keiri, _, _ := s.VCreate(VRoot, "経理部", "x")
+	sub, is, _ := s.VCreate(keiri, "A&B", "x")
+	if len(is.Warns) == 0 {
+		t.Fatalf("chars at depth2: %+v", is)
+	}
+	// 「総務」の中の「古い」フォルダが違反 → 移動できない
+	if rep, _ := s.PlanMove([]int64{ids["総務"]}, sub, "x"); rep.Applied != 0 || !strings.Contains(strings.Join(rep.Issues[0].Blocks, ""), "古い") {
+		t.Fatalf("subtree: %+v", rep)
+	}
+	// ファイル名の文字数
+	if rep, _ := s.PlanMove([]int64{ids["readme.txt"]}, sub, "x"); rep.Applied != 0 {
+		t.Fatalf("maxlen: %+v", rep)
+	}
+	// 必須フォルダ: 経理部の直下に「規定」「契約」が無い → 違反一覧に出る。作れば消える
+	has := func() bool {
+		vs, _ := s.RuleViolations()
+		for _, v := range vs {
+			if strings.Contains(v.Msg, "直下に") {
+				return true
+			}
+		}
+		return false
+	}
+	if !has() {
+		t.Fatal("required folders should be reported")
+	}
+	s.VCreate(keiri, "SOP", "x")
+	s.VCreate(keiri, "契約書", "x")
+	if has() {
+		t.Fatal("required folders exist now")
+	}
+}
+
+// 保留・担当・ツリーの絞り込み
+func TestHoldOwnerFilter(t *testing.T) {
+	s, ids := testDB(t)
+	if _, err := s.PlanHold([]int64{ids[`経理\2023`]}, "x"); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := s.Progress()
+	if p.HoldFiles != 2 || p.RemFiles != 5 {
+		t.Fatalf("progress: %+v", p)
+	}
+	if n := node(t, s, ids[`経理\2023\見積.xlsx`]); n.IAction != ActHold {
+		t.Fatalf("inherit hold: %+v", n)
+	}
+	// 担当: 経理=山田、経理\2024=佐藤(配下で上書き)
+	s.PlanOwner([]int64{ids["経理"]}, "山田", "x")
+	s.PlanOwner([]int64{ids[`経理\2024`]}, "佐藤", "x")
+	if n := node(t, s, ids[`経理\2023\請求書.pdf`]); n.IOwner != "山田" || n.Owner != "" {
+		t.Fatalf("owner inherit: %+v", n)
+	}
+	if n := node(t, s, ids[`経理\2024`]); n.Owner != "佐藤" || n.IOwner != "山田" {
+		t.Fatalf("owner own: %+v", n)
+	}
+	// 担当を設定しても保留(アクション)は消えない。担当の解除で行が残らない
+	s.PlanOwner([]int64{ids[`経理\2023`]}, "山田", "x")
+	s.PlanOwner([]int64{ids[`経理\2023`]}, "", "x")
+	if n := node(t, s, ids[`経理\2023`]); n.Action != ActHold {
+		t.Fatalf("hold kept: %+v", n)
+	}
+	tf, err := s.TreeFilterFor("山田", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kids, _ := s.Children(1, false, false, tf)
+	if len(kids) != 1 || kids[0].Name != "経理" || kids[0].TF != 1 {
+		t.Fatalf("filter root: %+v", kids)
+	}
+	sub, _ := s.Children(ids["経理"], false, false, tf)
+	for _, k := range sub {
+		if k.Name == "2024" {
+			t.Fatal("2024 belongs to 佐藤")
+		}
+	}
+	tf, _ = s.TreeFilterFor("佐藤", "")
+	kids, _ = s.Children(1, false, false, tf)
+	if len(kids) != 1 || kids[0].TF != 2 {
+		t.Fatalf("path only: %+v", kids)
+	}
+	tf, _ = s.TreeFilterFor("-", "")
+	kids, _ = s.Children(1, false, false, tf)
+	if len(kids) != 2 { // 総務・readme.txt
+		t.Fatalf("unassigned: %+v", kids)
+	}
+	tf, _ = s.TreeFilterFor("山田", "hold")
+	if kids, _ := s.Children(ids["経理"], false, false, tf); len(kids) != 1 || kids[0].Name != "2023" {
+		t.Fatalf("owner+hold: %+v", kids)
+	}
+	ns, total, err := s.Search(Filter{Owner: "山田", Kind: "file"}, 0, 100)
+	if err != nil || total != 3 {
+		t.Fatalf("search owner: %d %v %+v", total, err, ns)
+	}
+	if _, total, _ := s.Search(Filter{State: "ihold"}, 0, 100); total != 3 {
+		t.Fatalf("search ihold: %d", total)
+	}
+	os, _ := s.Owners()
+	if len(os) != 2 || os[0].Size+os[1].Size != 4 {
+		t.Fatalf("owners: %+v", os)
+	}
+}
+
+// 現在のフォルダ構成への当てはめ
+func TestRuleHits(t *testing.T) {
+	s, ids := testDB(t)
+	r := s.Rules()
+	r.Custom = topRules(1, "block")
+	r.ApplyCurrent = true
+	if err := s.SaveRules(r); err != nil {
+		t.Fatal(err)
+	}
+	// 第1階層: 経理・総務(名前が形式外)、readme.txt(ファイル)が違反
+	if n := s.RuleHitCount(); n != 3 {
+		t.Fatalf("hits=%d", n)
+	}
+	if n := node(t, s, ids["readme.txt"]); n.RuleMsg == "" {
+		t.Fatal("rule msg")
+	}
+	if _, total, _ := s.Search(Filter{Check: "rule5s"}, 0, 10); total != 3 {
+		t.Fatalf("search=%d", total)
+	}
+	tf, _ := s.TreeFilterFor("", "rule")
+	if kids, _ := s.Children(ids["経理"], false, false, tf); len(kids) != 0 {
+		t.Fatalf("children of violating folder: %+v", kids)
+	}
+	// ずらし: 現在のルートが整理後の第1階層 → 経理などは第2階層で対象外、ルートが対象
+	r.CurrentOffset = 1
+	s.SaveRules(r)
+	if n := s.RuleHitCount(); n != 1 {
+		t.Fatalf("offset hits=%d", n)
+	}
+	r.ApplyCurrent = false
+	s.SaveRules(r)
+	if n := s.RuleHitCount(); n != 0 {
+		t.Fatalf("off hits=%d", n)
 	}
 }

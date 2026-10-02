@@ -111,7 +111,7 @@ func mustAbs(p string) string { a, _ := filepath.Abs(p); return a }
 
 // ---- アクションの統合(マージ) ----
 
-type planVal struct{ Action, VParent, NewName, Due, Memo string }
+type planVal struct{ Action, VParent, NewName, Due, Memo, Owner string }
 type vnodeVal struct {
 	Parent, Name, Memo string
 	Deleted            bool
@@ -151,7 +151,7 @@ func loadMergeSrc(path string, base *mergeSrc) (*mergeSrc, error) {
 		ms.master, ms.Code = true, "マスター(現在)"
 	}
 	loadPlan := func(table string, withEditor bool) (map[int64]planVal, error) {
-		rows, err := st.DB.Query(`SELECT node_id, action, vparent, new_name, due, memo, editor FROM ` + table)
+		rows, err := st.DB.Query(`SELECT node_id, action, vparent, new_name, due, memo, editor, owner FROM ` + table)
 		if err != nil {
 			return nil, err
 		}
@@ -161,7 +161,7 @@ func loadMergeSrc(path string, base *mergeSrc) (*mergeSrc, error) {
 			var id int64
 			var v planVal
 			var ed string
-			rows.Scan(&id, &v.Action, &v.VParent, &v.NewName, &v.Due, &v.Memo, &ed)
+			rows.Scan(&id, &v.Action, &v.VParent, &v.NewName, &v.Due, &v.Memo, &ed, &v.Owner)
 			if v != (planVal{}) {
 				out[id] = v
 				if withEditor {
@@ -297,6 +297,8 @@ func (ms *mergeSrc) planLabel(v planVal) string {
 		parts = append(parts, "削除")
 	case ActMove:
 		parts = append(parts, "移動 → "+joinV("(整理後)", ms.vpath(v.VParent)))
+	case ActHold:
+		parts = append(parts, "保留")
 	default:
 		parts = append(parts, "アクションなし")
 	}
@@ -308,6 +310,9 @@ func (ms *mergeSrc) planLabel(v planVal) string {
 	}
 	if v.Memo != "" {
 		parts = append(parts, "メモ: "+v.Memo)
+	}
+	if v.Owner != "" {
+		parts = append(parts, "担当: "+v.Owner)
 	}
 	return strings.Join(parts, " / ")
 }
@@ -647,7 +652,8 @@ func (ma *MergeAnalysis) Apply(out string, choices map[string]int) ([]string, er
 		if v == (planVal{}) {
 			continue
 		}
-		if _, err := tx.Exec(`INSERT INTO plan VALUES(?,?,?,?,?,?,?,?)`, id, v.Action, v.VParent, v.NewName, v.Due, v.Memo, ma.planEd[id], now); err != nil {
+		if _, err := tx.Exec(`INSERT INTO plan(node_id, action, vparent, new_name, due, memo, editor, updated_at, owner) VALUES(?,?,?,?,?,?,?,?,?)`,
+			id, v.Action, v.VParent, v.NewName, v.Due, v.Memo, ma.planEd[id], now, v.Owner); err != nil {
 			return nil, err
 		}
 	}
@@ -725,8 +731,14 @@ func (s *Store) ImportPlans(otherDB string) (int64, error) {
 	if _, err := conn.ExecContext(ctxBG, `INSERT OR REPLACE INTO main.vnodes SELECT * FROM other.vnodes`); err != nil {
 		return 0, err
 	}
-	r, err := conn.ExecContext(ctxBG, `INSERT OR REPLACE INTO main.plan
-		SELECT n.id, o.action, o.vparent, o.new_name, o.due, o.memo, o.editor, o.updated_at
+	owner := "''"
+	var col int
+	conn.QueryRowContext(ctxBG, `SELECT count(*) FROM pragma_table_info('plan', 'other') WHERE name='owner'`).Scan(&col)
+	if col > 0 {
+		owner = "o.owner"
+	}
+	r, err := conn.ExecContext(ctxBG, `INSERT OR REPLACE INTO main.plan(node_id, action, vparent, new_name, due, memo, editor, updated_at, owner)
+		SELECT n.id, o.action, o.vparent, o.new_name, o.due, o.memo, o.editor, o.updated_at, `+owner+`
 		FROM other.plan o JOIN other.nodes onn ON onn.id = o.node_id JOIN main.nodes n ON n.path = onn.path`)
 	if err != nil {
 		return 0, err

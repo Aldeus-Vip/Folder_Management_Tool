@@ -22,17 +22,25 @@ type Rules struct {
 	BadName   string `json:"badName"`     // 禁止文字・末尾の.や空白・予約語
 	CopyName  string `json:"copyName"`    // コピー的/版管理的な名前(「- コピー」「(1)」「旧」「v2」等)
 	TagNeed   string `json:"tagRequired"` // タグが1つも無い項目の移動
-	// 上位階層の命名・配置ルール(toprule.go)
-	TopDepth    int    `json:"topDepth"`    // 第何階層までを対象にするか(0 = 無効)
-	TopFormat   string `json:"topFormat"`   // num3 / alnum3 / any3 / custom
-	TopPattern  string `json:"topPattern"`  // custom のときの正規表現
-	TopNameMode string `json:"topNameMode"` // 形式に合わないフォルダ名
-	TopFileMode string `json:"topFileMode"` // 対象階層へのファイルの配置
+	// カスタムルール(rules.go)。名前・配置の条件を階層ごとに自由に組み合わせる
+	Custom []CustomRule `json:"custom"`
+	// 現在のフォルダ構成にもルールを当てはめて、合わない項目を色分け・絞り込みできるようにする
+	ApplyCurrent  bool `json:"applyCurrent"`
+	CurrentOffset int  `json:"currentOffset"` // 現在のルート(スキャンしたフォルダ)が整理後の第何階層に当たるか
 }
 
-var DefaultRules = Rules{RootName: "整理後", MaxDepth: 6, DepthMode: "block", PathLimit: 250, PathMode: "block",
-	MaxItems: 100, ItemsMode: "warn", BadName: "block", CopyName: "warn", TagNeed: "off",
-	TopDepth: 0, TopFormat: "num3", TopNameMode: "block", TopFileMode: "block"}
+// DefaultRules は「ファイル整理方針」(階層は10階層以下 など)に沿った初期値。
+var DefaultRules = Rules{RootName: "整理後", MaxDepth: 10, DepthMode: "block", PathLimit: 250, PathMode: "block",
+	MaxItems: 100, ItemsMode: "warn", BadName: "block", CopyName: "warn", TagNeed: "off"}
+
+// 旧バージョンの「上位階層の命名・配置ルール」(カスタムルールへ移し替える)
+type legacyTopRule struct {
+	TopDepth    int    `json:"topDepth"`
+	TopFormat   string `json:"topFormat"`
+	TopPattern  string `json:"topPattern"`
+	TopNameMode string `json:"topNameMode"`
+	TopFileMode string `json:"topFileMode"`
+}
 
 func (s *Store) Rules() Rules {
 	r := DefaultRules
@@ -44,6 +52,19 @@ func (s *Store) Rules() Rules {
 	if r.RootName == "" {
 		r.RootName = DefaultRules.RootName
 	}
+	if r.Custom == nil {
+		var old legacyTopRule
+		json.Unmarshal([]byte(js), &old)
+		if old.TopDepth > 0 {
+			name := CustomRule{ID: "top-name", Cat: "整頓", Label: "上位階層のフォルダ名の形式", Mode: old.TopNameMode, Kind: "dir", DepthOp: "le", Depth: old.TopDepth, Must: Cond{"format", old.TopFormat}}
+			if old.TopFormat == "custom" {
+				name.Must = Cond{"regex", old.TopPattern}
+			}
+			r.Custom = []CustomRule{name, {ID: "top-file", Cat: "整頓", Label: fmt.Sprintf("第%d階層まではファイルを置かない", old.TopDepth), Mode: old.TopFileMode, Kind: "file", DepthOp: "le", Depth: old.TopDepth, Must: Cond{"forbid", ""}}}
+		} else {
+			r.Custom = append([]CustomRule{}, DefaultCustomRules...)
+		}
+	}
 	return r
 }
 
@@ -51,18 +72,27 @@ func (s *Store) SaveRules(r Rules) error {
 	if r.MaxDepth < 1 || r.PathLimit < 10 || r.MaxItems < 1 {
 		return fmt.Errorf("ルールの数値が不正です")
 	}
-	if r.TopDepth < 0 {
-		return fmt.Errorf("対象の階層は0以上を指定してください")
+	modes := []string{r.DepthMode, r.PathMode, r.ItemsMode, r.BadName, r.CopyName, r.TagNeed}
+	if r.Custom == nil {
+		r.Custom = []CustomRule{}
 	}
-	if r.TopFormat == "" {
-		r.TopFormat = "num3"
-	}
-	if r.TopDepth > 0 {
-		if _, err := r.topRegexp(); err != nil {
-			return err
+	for i := range r.Custom {
+		c := &r.Custom[i]
+		if c.ID == "" {
+			c.ID = newUUID()[:8]
+		}
+		if c.Cat == "" {
+			c.Cat = "整頓"
+		}
+		if c.Kind == "" {
+			c.Kind = "any"
+		}
+		modes = append(modes, c.Mode)
+		if _, err := c.compile(); err != nil {
+			return fmt.Errorf("ルール「%s」: %v", c.Describe(), err)
 		}
 	}
-	for _, m := range []string{r.DepthMode, r.PathMode, r.ItemsMode, r.BadName, r.CopyName, r.TagNeed, r.TopNameMode, r.TopFileMode} {
+	for _, m := range modes {
 		if m != "off" && m != "warn" && m != "block" {
 			return fmt.Errorf("ルールの種別が不正です: %s", m)
 		}
@@ -72,7 +102,7 @@ func (s *Store) SaveRules(r Rules) error {
 		return err
 	}
 	s.invalidate()
-	return nil
+	return s.EnsureRuleHits()
 }
 
 // Issue は5Sルールのチェック結果(1項目分)。
@@ -121,7 +151,7 @@ func nameRuleIssues(is *Issue, r Rules, name string, isDir bool) {
 func runeLen(s string) int { return utf8.RuneCountInString(s) }
 
 // checkPlace は項目 x を仮想フォルダ target に名前 name で置けるか判定する。ロック中に呼ぶ。
-func (s *Store) checkPlace(r Rules, x *Node, target *vnode, name string, adding int) Issue {
+func (s *Store) checkPlace(r Rules, rs *ruleSet, x *Node, target *vnode, name string, adding int) Issue {
 	is := Issue{ID: x.ID, Name: x.Name}
 	nameRuleIssues(&is, r, name, x.IsDir)
 	relDepth, tail := 0, 0
@@ -145,7 +175,7 @@ func (s *Store) checkPlace(r Rules, x *Node, target *vnode, name string, adding 
 	if len(x.Tags) == 0 {
 		apply(&is, r.TagNeed, "タグが設定されていません(用途・種類を明確にしてください)")
 	}
-	s.checkTopPlace(&is, r, x, target.Depth+1, name)
+	s.checkPlaceRules(&is, r, rs, x, target.Depth+1, name)
 	if adding > 0 {
 		if n := s.vStats()[target.UUID]; n != nil && n.direct+adding > r.MaxItems {
 			apply(&is, r.ItemsMode, fmt.Sprintf("移動先の直下が %d 項目になり、上限(%d)を超えます", n.direct+adding, r.MaxItems))
@@ -165,7 +195,7 @@ func (s *Store) writePlans(fn func(tx *sql.Tx) error) error {
 	if err := fn(tx); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM plan WHERE action='' AND memo='' AND due='' AND new_name=''`); err != nil {
+	if _, err := tx.Exec(`DELETE FROM plan WHERE action='' AND memo='' AND due='' AND new_name='' AND owner=''`); err != nil {
 		return err
 	}
 	if err := rebuildCover(tx); err != nil {
@@ -184,10 +214,19 @@ const upsertPlan = `INSERT INTO plan(node_id, action, vparent, new_name, editor,
 
 // PlanDelete は削除を設定する(フォルダは配下ごと)。
 func (s *Store) PlanDelete(ids []int64, editor string) (*Report, error) {
+	return s.planSimple(ids, ActDelete, editor)
+}
+
+// PlanHold は保留を設定する(フォルダは配下ごと)。判断を後回しにした項目の目印。
+func (s *Store) PlanHold(ids []int64, editor string) (*Report, error) {
+	return s.planSimple(ids, ActHold, editor)
+}
+
+func (s *Store) planSimple(ids []int64, act, editor string) (*Report, error) {
 	rep := &Report{}
 	err := s.writePlans(func(tx *sql.Tx) error {
 		for _, id := range ids {
-			if _, err := tx.Exec(upsertPlan, id, ActDelete, "", "", editor, nowStr()); err != nil {
+			if _, err := tx.Exec(upsertPlan, id, act, "", "", editor, nowStr()); err != nil {
 				return err
 			}
 			rep.Applied++
@@ -224,6 +263,7 @@ func (s *Store) PlanMove(ids []int64, target, editor string) (*Report, error) {
 		return nil, err
 	}
 	r := s.Rules()
+	rs := r.memoized()
 	rep := &Report{}
 	var ok []*Node
 	s.mu.Lock()
@@ -244,7 +284,7 @@ func (s *Store) PlanMove(ids []int64, target, editor string) (*Report, error) {
 		if x.NewName != "" {
 			name = x.NewName
 		}
-		is := s.checkPlace(r, x, tv, name, adding)
+		is := s.checkPlace(r, rs, x, tv, name, adding)
 		rep.add(is)
 		if len(is.Blocks) == 0 {
 			ok = append(ok, x)
@@ -294,7 +334,7 @@ func (s *Store) PlanSetFields(ids []int64, pf PlanFields, editor string) (*Repor
 				return nil, fmt.Errorf("名前変更は「移動」を設定した項目にだけ設定できます")
 			}
 			s.mu.Lock()
-			is := s.checkPlace(s.Rules(), x, s.vt.nodes[x.VParent], nn, 0)
+			is := s.checkPlace(s.Rules(), s.Rules().compiled(), x, s.vt.nodes[x.VParent], nn, 0)
 			s.mu.Unlock()
 			rep.add(is)
 			if len(is.Blocks) > 0 {
@@ -379,9 +419,7 @@ func (s *Store) AllTags() ([]Count, error) {
 func (s *Store) vfolderIssue(r Rules, parent *vnode, name, except string) Issue {
 	is := Issue{Name: name}
 	nameRuleIssues(&is, r, name, true)
-	if !r.topNameOK(parent.Depth+1, name) {
-		apply(&is, r.TopNameMode, r.topNameMsg(parent.Depth+1, name))
-	}
+	r.compiled().item(true, parent.Depth+1, name, func(mode, msg string) { apply(&is, mode, msg) })
 	if parent.Depth+1 > r.MaxDepth {
 		apply(&is, r.DepthMode, fmt.Sprintf("階層 %d になり、上限(%d)を超えます", parent.Depth+1, r.MaxDepth))
 	}
@@ -497,30 +535,51 @@ func (s *Store) VMove(uuid, parent, editor string) (*Issue, error) {
 	if d := p.Depth + 1 + maxRel(n); d > r.MaxDepth {
 		apply(&is, r.DepthMode, fmt.Sprintf("配下の仮想フォルダが階層 %d になり、上限(%d)を超えます", d, r.MaxDepth))
 	}
-	// 上位階層ルール: 移動後に対象階層に入る配下の仮想フォルダの名前と、そこに置いたファイル
-	if r.TopDepth > 0 {
-		var walk func(v *vnode, d int)
-		walk = func(v *vnode, d int) {
-			if d > r.TopDepth {
-				return
-			}
-			if v != n && !r.topNameOK(d, v.Name) {
-				apply(&is, r.TopNameMode, r.topNameMsg(d, v.Name))
-			}
-			if d+1 <= r.TopDepth && r.TopFileMode != "off" {
-				var files int
-				s.DB.QueryRow(`SELECT count(*) FROM plan p JOIN nodes x ON x.id=p.node_id WHERE p.action='move' AND p.vparent=? AND x.is_dir=0`, v.UUID).Scan(&files)
-				if files > 0 {
-					apply(&is, r.TopFileMode, fmt.Sprintf("「%s」に置いたファイル %d 件が第%d階層になります(第%d階層まではファイルを置けません)", v.Name, files, d+1, r.TopDepth))
-				}
-			}
-			for _, k := range v.kids {
-				walk(k, d+1)
-			}
+	// カスタムルール: 移動後の階層で、配下の仮想フォルダの名前と、そこに置いた項目を調べ直す
+	rs := r.memoized()
+	type at struct {
+		uuid string
+		d    int
+	}
+	var sub []at
+	var walk func(v *vnode, d int)
+	walk = func(v *vnode, d int) {
+		if v != n {
+			rs.item(true, d, v.Name, func(mode, msg string) { apply(&is, mode, msg) })
 		}
+		sub = append(sub, at{v.UUID, d})
+		for _, k := range v.kids {
+			walk(k, d+1)
+		}
+	}
+	if len(rs.rules) > 0 {
 		walk(n, p.Depth+1)
 	}
 	s.mu.Unlock()
+	for _, a := range sub {
+		if rs.maxD >= 0 && a.d+1 > rs.maxD {
+			continue
+		}
+		placed, err := s.query(`SELECT `+nodeCols+nodeFrom+` WHERE p.action='move' AND p.vparent=?`, a.uuid)
+		if err != nil {
+			return nil, err
+		}
+		for i := range placed {
+			x := &placed[i]
+			name := x.Name
+			if x.NewName != "" {
+				name = x.NewName
+			}
+			var sis Issue
+			s.checkPlaceRules(&sis, r, rs, x, a.d+1, name)
+			for _, m := range sis.Blocks {
+				is.Blocks = append(is.Blocks, "「"+name+"」: "+m)
+			}
+			for _, m := range sis.Warns {
+				is.Warns = append(is.Warns, "「"+name+"」: "+m)
+			}
+		}
+	}
 	if len(is.Blocks) > 0 {
 		return &is, nil
 	}

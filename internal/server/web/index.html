@@ -108,7 +108,16 @@ window.TOKEN = "__TOKEN__";
     <button id="tr-expand">展開</button>
     <span class="sep"></span>
     <label><input type="checkbox" id="tr-dirs"> フォルダのみ</label>
-    <label title="削除・移動を設定した項目(とその配下)を表示しない"><input type="checkbox" id="tr-hide"> アクション設定済みを非表示</label>
+    <label title="削除・移動・保留を設定した項目(とその配下)を表示しない"><input type="checkbox" id="tr-hide"> アクション設定済みを非表示</label>
+    <span class="sep"></span>
+    <span>担当</span>
+    <select id="tr-owner" title="担当で絞り込む(フォルダの担当は配下に引き継がれます)"></select>
+    <select id="tr-filter" title="表示する項目を絞り込む">
+      <option value="">すべて表示</option>
+      <option value="hold">⏸ 保留のみ</option>
+      <option value="unhandled">未処理のみ</option>
+      <option value="rule">⛔ 5Sルール外れのみ</option>
+    </select>
     <span class="sep"></span>
     <label title="ルート(選択フォルダ)を階層0として数えます">深い階層の警告 <input type="number" id="tr-deep" min="1" style="width:52px"> 階層以上</label>
     <span class="sep"></span>
@@ -127,9 +136,12 @@ window.TOKEN = "__TOKEN__";
   <div id="pickbar"><span>📦</span><span id="pickbar-text"></span><span class="grow"></span><span class="kbd">Esc でも中止</span><button id="pick-cancel">キャンセル</button></div>
   <div class="split">
     <div class="pane src">
-      <div class="panehead"><b>現在のフォルダ構成</b><span class="muted kbd">右クリック:メニュー / ダブルクリック:ファイルを開く / ドラッグで右の仮想フォルダへ移動 / Del:削除 M:移動 Backspace:解除</span></div>
+      <div class="panehead"><b>現在のフォルダ構成</b><span id="tr-filtered"></span><span class="grow"></span>
+        <button id="tr-rule" class="danger" title="5Sルールを現在の構成に当てはめた場合に合わない項目(⚙ オプション → 5Sルール → 適用範囲)" hidden></button>
+        <span class="muted kbd" title="右クリック:メニュー / ダブルクリック:ファイルを開く / ドラッグで右の仮想フォルダへ移動">Del:削除 M:移動 H:保留 Backspace:解除</span></div>
       <div id="tr-grid" class="grid"></div>
     </div>
+    <div class="splitter" id="org-split" title="ドラッグで左右の幅を調整(ダブルクリックで元に戻す)"></div>
     <div class="pane dst">
       <div class="panehead">
         <b>整理後のフォルダ構成(仮想)</b>
@@ -153,6 +165,7 @@ window.TOKEN = "__TOKEN__";
     <select id="ls-check"></select>
     <select id="ls-state"></select>
     <select id="ls-tag"></select>
+    <select id="ls-owner"></select>
     <input type="number" id="ls-min" placeholder="サイズ≥MB" style="width:96px" min="0">
     <input type="date" id="ls-before" title="この日付より前に更新">
     <span id="ls-under" hidden></span>
@@ -176,7 +189,8 @@ window.TOKEN = "__TOKEN__";
 <section id="view-plan" class="view">
   <div class="scrollpage" style="flex:none; padding-bottom:0" id="plan-top"></div>
   <div class="toolbar">
-    <select id="pl-state"><option value="own">個別に設定した項目(すべて)</option><option value="delete">削除</option><option value="move">移動</option></select>
+    <select id="pl-state"><option value="own">個別に設定した項目(すべて)</option><option value="delete">削除</option><option value="move">移動</option><option value="hold">保留</option></select>
+    <select id="pl-owner"></select>
     <select id="pl-editor"><option value="">作業者: すべて</option></select>
     <select id="pl-tag"></select>
     <span id="pl-count" class="muted"></span>

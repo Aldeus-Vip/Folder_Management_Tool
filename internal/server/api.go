@@ -60,12 +60,29 @@ func (a *App) apiNode(r *http.Request, s *fsdb.Store) (any, error) {
 
 func flag(r *http.Request, k string) bool { return r.URL.Query().Get(k) == "1" }
 
+// treeFilter は整理画面の左ツリーの絞り込み(owner = 担当、tf = hold / rule / unhandled)。
+func treeFilter(r *http.Request, s *fsdb.Store) (*fsdb.TreeFilter, error) {
+	tf, err := s.TreeFilterFor(r.URL.Query().Get("owner"), r.URL.Query().Get("tf"))
+	if err != nil {
+		return nil, badRequest("%v", err)
+	}
+	return tf, nil
+}
+
 func (a *App) apiChildren(r *http.Request, s *fsdb.Store) (any, error) {
-	return s.Children(qInt(r, "id", 1), flag(r, "dirs"), flag(r, "hide"))
+	tf, err := treeFilter(r, s)
+	if err != nil {
+		return nil, err
+	}
+	return s.Children(qInt(r, "id", 1), flag(r, "dirs"), flag(r, "hide"), tf)
 }
 
 func (a *App) apiSubtree(r *http.Request, s *fsdb.Store) (any, error) {
-	ns, err := s.Subtree(qInt(r, "id", 1), int(qInt(r, "depth", 1)), flag(r, "dirs"), flag(r, "hide"), 200000)
+	tf, err := treeFilter(r, s)
+	if err != nil {
+		return nil, err
+	}
+	ns, err := s.Subtree(qInt(r, "id", 1), int(qInt(r, "depth", 1)), flag(r, "dirs"), flag(r, "hide"), 200000, tf)
 	if err != nil {
 		return nil, badRequest("%v", err)
 	}
@@ -277,6 +294,23 @@ func (a *App) apiVDelete(r *http.Request, s *fsdb.Store, code string) (any, erro
 type idsReq struct {
 	IDs    []int64 `json:"ids"`
 	Target string  `json:"target"`
+	Owner  string  `json:"owner"`
+}
+
+func (a *App) apiPlanHold(r *http.Request, s *fsdb.Store, code string) (any, error) {
+	var q idsReq
+	if err := decode(r, &q); err != nil {
+		return nil, err
+	}
+	return s.PlanHold(q.IDs, code)
+}
+
+func (a *App) apiPlanOwner(r *http.Request, s *fsdb.Store, code string) (any, error) {
+	var q idsReq
+	if err := decode(r, &q); err != nil {
+		return nil, err
+	}
+	return s.PlanOwner(q.IDs, q.Owner, code)
 }
 
 func (a *App) apiPlanDelete(r *http.Request, s *fsdb.Store, code string) (any, error) {
@@ -326,7 +360,7 @@ func (a *App) apiPlanFields(r *http.Request, s *fsdb.Store, code string) (any, e
 func (a *App) apiPlanFilter(r *http.Request, s *fsdb.Store, code string) (any, error) {
 	var q struct {
 		Query  string `json:"query"` // 検索画面と同じURLクエリ文字列
-		Op     string `json:"op"`    // delete | move | clear | tag
+		Op     string `json:"op"`    // delete | move | hold | clear | tag | owner
 		Target string `json:"target"`
 		Tag    string `json:"tag"`
 	}
@@ -350,6 +384,10 @@ func (a *App) apiPlanFilter(r *http.Request, s *fsdb.Store, code string) (any, e
 			return nil, badRequest("%v", err)
 		}
 		return rep, nil
+	case "hold":
+		return s.PlanHold(ids, code)
+	case "owner":
+		return s.PlanOwner(ids, q.Tag, code)
 	case "clear":
 		return s.PlanClear(ids, code)
 	case "tag":

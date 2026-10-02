@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -125,7 +126,11 @@ func (a *App) Handler() http.Handler {
 		"GET /api/vchildren": a.withStore(a.apiVChildren),
 		"GET /api/vreal":     a.withStore(a.apiVReal),
 		"GET /api/vtree":     a.withStore(a.apiVTree),
-		"GET /api/vrules":    a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) { return s.TopRuleViolations() }),
+		"GET /api/vrules":    a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) { return s.RuleViolations() }),
+		"GET /api/rulehits": a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) {
+			return map[string]int64{"count": s.RuleHitCount()}, nil
+		}),
+		"GET /api/owners":    a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) { return s.Owners() }),
 		"GET /api/vwarnings": a.withStore(a.apiVWarnings),
 		"POST /api/vcreate":  a.withEdit(a.apiVCreate),
 		"POST /api/vrename":  a.withEdit(a.apiVRename),
@@ -134,6 +139,8 @@ func (a *App) Handler() http.Handler {
 		"POST /api/vdelete":  a.withEdit(a.apiVDelete),
 		// アクション・タグの編集
 		"POST /api/plan/delete": a.withEdit(a.apiPlanDelete),
+		"POST /api/plan/hold":   a.withEdit(a.apiPlanHold),
+		"POST /api/plan/owner":  a.withEdit(a.apiPlanOwner),
 		"POST /api/plan/move":   a.withEdit(a.apiPlanMove),
 		"POST /api/plan/clear":  a.withEdit(a.apiPlanClear),
 		"POST /api/plan/fields": a.withEdit(a.apiPlanFields),
@@ -355,6 +362,9 @@ func (a *App) openStore(path string) error {
 		old.Close()
 	}
 	a.addRecent(path)
+	if err := s.EnsureRuleHits(); err != nil { // ルールを現在の構成に当てはめた結果(ルールが変わっていれば作り直す)
+		log.Printf("rule hits: %v", err)
+	}
 	go s.Summary() // 初回のサマリー集計を先に済ませておく(大規模DBで数秒かかるため)
 	return nil
 }

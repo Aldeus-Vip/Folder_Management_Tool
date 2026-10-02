@@ -121,8 +121,11 @@ td.wrap { white-space: normal; word-break: break-all; }
 /* ---- 分割(エクスプローラー) ---- */
 .split { flex: 1; display: flex; min-height: 0; }
 .pane { display: flex; flex-direction: column; min-width: 0; }
-.pane.src { flex: 1.35; border-right: 3px solid var(--line); }
-.pane.dst { flex: 1; }
+.pane.src { flex: 1.35 1 0; }
+.pane.dst { flex: 1 1 0; }
+.splitter { flex: none; width: 6px; cursor: col-resize; background: var(--line); border-left: 1px solid var(--line2); border-right: 1px solid var(--line2); }
+.splitter:hover, .splitter.drag { background: var(--accent); }
+body.colresize, body.colresize * { cursor: col-resize !important; user-select: none; }
 .panehead { display: flex; align-items: center; gap: 6px; padding: 5px 10px; background: var(--surface); border-bottom: 1px solid var(--line); flex: none; flex-wrap: wrap; }
 .panehead.sub { padding: 3px 10px; }
 .panehead button { padding: 2px 8px; font-size: 12px; }
@@ -202,10 +205,19 @@ td.wrap { white-space: normal; word-break: break-all; }
 .progbar .tr i { display: block; height: 100%; }
 .progbar .seg-move { background: var(--bar); }
 .progbar .seg-del { background: var(--gone); }
+.seg-hold { background: var(--violet); }
 .legend-dot { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 3px; vertical-align: middle; }
 .g-row.del .g-cell { color: var(--gone); }
 .g-row.del .nm { text-decoration: line-through; }
 .g-row.mov .nm { color: var(--ink2); }
+.g-row.hold .nm { color: var(--violet); }
+.g-row.r5s { box-shadow: inset 4px 0 0 var(--red); }
+.g-row.r5s.sel { box-shadow: inset 4px 0 0 var(--red), inset 7px 0 0 var(--sel-line); }
+.g-row.tfpath .g-cell { opacity: .55; }
+.b.r5s { background: var(--red); color: #fff; }
+.own { font-weight: 600; color: var(--teal); }
+.iown { color: var(--ink3); }
+#tr-filtered .b { font-size: 12px; }
 .g-row.vdir { background: var(--vdir); }
 .g-row.vdir .nm { color: var(--vdir-ink); font-weight: 600; }
 .g-row.sim { box-shadow: inset 0 -2px 0 var(--amber); }
@@ -216,6 +228,7 @@ td.wrap { white-space: normal; word-break: break-all; }
 .actb { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 11px; line-height: 18px; font-weight: 600; white-space: nowrap; }
 .actb.delete { background: var(--red-bg); color: var(--red); }
 .actb.move { background: var(--blue-bg); color: var(--blue); }
+.actb.hold { background: var(--violet-bg); color: var(--violet); }
 .actb.inh { background: none; color: var(--ink3); font-weight: 400; border: 1px dashed var(--line); }
 .due { font-size: 12px; }
 .due.over { color: var(--red); font-weight: 600; }
@@ -257,3 +270,25 @@ dl.props dt { color: var(--ink2); }
 dl.props dd { margin: 0; }
 .btns { display: flex; flex-wrap: wrap; gap: 6px; }
 label.inl { display: block; margin: 4px 0; }
+
+/* ---- オプション(タブ)・5Sルールの編集 ---- */
+#modal .box.wide { width: 920px; }
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin: 0 0 12px; flex-wrap: wrap; }
+.tabs button { border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; background: none; padding: 5px 12px; color: var(--ink2); margin-bottom: -1px; }
+.tabs button.on { border-color: var(--line); background: var(--surface); color: var(--ink); font-weight: 600; }
+.tabs.sub button { font-size: 12px; padding: 3px 10px; }
+.tabs .cnt { font-size: 11px; color: var(--ink3); margin-left: 3px; }
+.tabpane { min-height: 360px; }
+.catdesc { background: var(--bg); border-radius: 8px; padding: 6px 10px; margin-bottom: 10px; font-size: 12px; color: var(--ink2); }
+.rule { border: 1px solid var(--line); border-left: 4px solid var(--amber); border-radius: 8px; padding: 6px 8px; margin-bottom: 8px; background: var(--surface); }
+.rule.m-block { border-left-color: var(--red); }
+.rule.m-off { border-left-color: var(--line); opacity: .75; }
+.rule .rl { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; margin: 3px 0; }
+.rule .rl > b { font-size: 12px; color: var(--ink2); width: 36px; }
+.rule input[type=number] { width: 56px; }
+.rule .rd { font-size: 12px; color: var(--ink2); margin-top: 3px; }
+.rule .grow { flex: 1; }
+.rule input.lbl { flex: 1; min-width: 200px; }
+.rule input.val { min-width: 220px; flex: 1; }
+.builtin { display: grid; grid-template-columns: 280px 140px 110px 1fr; gap: 6px 8px; align-items: center; margin-bottom: 10px; }
+button.mini { padding: 0 6px; font-size: 12px; }
