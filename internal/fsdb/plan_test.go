@@ -224,7 +224,7 @@ func TestActionMerge(t *testing.T) {
 	a.Close()
 	b.Close()
 
-	ma, err := AnalyzeActionMerge([]string{cA, cB})
+	ma, err := AnalyzeActionMerge([]string{cA, cB}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestActionMerge(t *testing.T) {
 	if err := m.WorkCopy(c2, "X"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := AnalyzeActionMerge([]string{cA, c2}); err == nil {
+	if _, err := AnalyzeActionMerge([]string{cA, c2}, ""); err == nil {
 		t.Fatal("different revisions should be rejected")
 	}
 }
@@ -270,7 +270,7 @@ func TestPlanScript(t *testing.T) {
 	s.PlanMove([]int64{ids["経理"]}, v, "x")
 	s.PlanDelete([]int64{ids[`経理\メモ.txt`]}, "x")
 	var b strings.Builder
-	if err := s.WritePlanScript(&b); err != nil {
+	if err := s.WritePlanScript(&b, nil); err != nil {
 		t.Fatal(err)
 	}
 	out := b.String()
@@ -281,5 +281,105 @@ func TestPlanScript(t *testing.T) {
 	}
 	if !strings.Contains(out, `T '経理部\経理'`) {
 		t.Fatalf("dest:\n%s", out)
+	}
+}
+
+// 1人分の作業用コピーを元のマスターへ統合 → 別の人が古い版のコピーから同じマスターへ統合(マスターの最新と比較)
+func TestMergeIntoMaster(t *testing.T) {
+	s, ids := testDB(t)
+	dir := t.TempDir()
+	master := filepath.Join(dir, "master.db")
+	if _, err := s.DB.Exec(`VACUUM INTO ?`, master); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := Open(master)
+	cA, cB := filepath.Join(dir, "a.db"), filepath.Join(dir, "b.db")
+	m.WorkCopy(cA, "山田")
+	m.WorkCopy(cB, "佐藤")
+	m.Close()
+	a, _ := Open(cA)
+	if mp, _ := a.Meta(); mp["master_path"] != mustAbs(master) {
+		t.Fatalf("master_path=%q", mp["master_path"])
+	}
+	a.PlanDelete([]int64{ids["readme.txt"]}, "山田")
+	a.Close()
+	// 山田さん1人分をマスターへ
+	ma, err := AnalyzeActionMerge([]string{cA}, master)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ma.Conflicts) != 0 || ma.Auto != 1 {
+		t.Fatalf("single: %+v", ma)
+	}
+	warns, err := ma.Apply("", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log(warns)
+	backups, _ := filepath.Glob(filepath.Join(dir, "master_backup_*.db"))
+	if len(backups) != 1 {
+		t.Fatalf("backup: %v", backups)
+	}
+	// 佐藤さん(古い版から作ったコピー): readme を移動 → マスターの「削除」と競合
+	b, _ := Open(cB)
+	v, _, _ := b.VCreate(VRoot, "総務", "佐藤")
+	b.PlanMove([]int64{ids["readme.txt"], ids["総務"]}, v, "佐藤")
+	b.Close()
+	ma, err = AnalyzeActionMerge([]string{cB}, master)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ma.Conflicts) != 1 || len(ma.Warnings) == 0 {
+		t.Fatalf("rebase: conflicts=%+v warns=%v", ma.Conflicts, ma.Warnings)
+	}
+	c := ma.Conflicts[0]
+	keep := 0 // マスター(現在)の「削除」を残す
+	for i, o := range c.Options {
+		if strings.Contains(strings.Join(o.Editors, ","), "マスター") {
+			keep = i
+		}
+	}
+	if _, err := ma.Apply("", map[string]int{c.Key: keep}); err != nil {
+		t.Fatal(err)
+	}
+	m2, _ := Open(master)
+	defer m2.Close()
+	if n := node(t, m2, ids["readme.txt"]); n.Action != ActDelete {
+		t.Fatalf("readme: %+v", n)
+	}
+	if n := node(t, m2, ids["総務"]); n.Action != ActMove || n.VPath != "総務" {
+		t.Fatalf("総務: %+v", n)
+	}
+	if m2.EditorCode() != "" {
+		t.Fatal("master must stay code-less")
+	}
+}
+
+func TestAlias(t *testing.T) {
+	s, ids := testDB(t)
+	url := "https://example.sharepoint.com/sites/Teams_758/Shared Documents/"
+	if err := s.SetAlias(url); err != nil {
+		t.Fatal(err)
+	}
+	n := node(t, s, ids[`経理\2023\請求書.pdf`])
+	if n.Path != "https://example.sharepoint.com/sites/Teams_758/Shared Documents/経理/2023/請求書.pdf" {
+		t.Fatalf("path=%s", n.Path)
+	}
+	if id, err := s.FindPath("https://example.sharepoint.com/sites/Teams_758/Shared Documents/経理"); err != nil || id != ids["経理"] {
+		t.Fatalf("find %d %v", id, err)
+	}
+	m, _ := s.Meta()
+	if lp := LocalPath(n.Path, m, `C:\Users\山田\OneDrive - 会社\部署 - Documents`); lp != `C:\Users\山田\OneDrive - 会社\部署 - Documents\経理\2023\請求書.pdf` {
+		t.Fatalf("local=%s", lp)
+	}
+	if lp := LocalPath(n.Path, m, ""); lp != `\\srv\share\経理\2023\請求書.pdf` {
+		t.Fatalf("scanned=%s", lp)
+	}
+	// 元に戻す
+	if err := s.SetAlias(""); err != nil {
+		t.Fatal(err)
+	}
+	if n := node(t, s, ids[`経理\2023\請求書.pdf`]); n.Path != `\\srv\share\経理\2023\請求書.pdf` {
+		t.Fatalf("restored=%s", n.Path)
 	}
 }

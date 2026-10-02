@@ -69,6 +69,9 @@ window.TOKEN = "__TOKEN__";
     ネットワークドライブは「同時読み込み数」を増やすと速くなることがあります。</p>
     <div class="form">
       <span>対象フォルダ</span><input type="text" id="scan-root" placeholder="例: \\fileserver\share\部署A"><button data-dialog="folder" data-target="scan-root">参照…</button>
+      <span>記録するパス(任意)</span><input type="text" id="scan-alias" placeholder="例: https://xxx.sharepoint.com/sites/チーム/Shared Documents"><span></span>
+      <span></span><span class="hint" style="grid-column:span 2">SharePoint を OneDrive で同期(ショートカット)したフォルダをスキャンする場合に、SharePoint の URL を入れます。
+        DBには個人のパス(C:\Users\…)ではなくこのURLで記録され、全員が同じパスで作業・統合できます。実際の場所はPCごとに「⚙ オプション」で設定します。</span>
       <span>保存するDB名</span><input type="text" id="scan-db" placeholder="空欄なら フォルダ名_日時"><span></span>
       <span>同時読み込み数</span><select id="scan-workers"><option>4</option><option>8</option><option selected>16</option><option>32</option><option>64</option></select><span></span>
       <span></span><button class="primary" id="scan-go">スキャン開始</button><span></span>
@@ -121,21 +124,20 @@ window.TOKEN = "__TOKEN__";
     <button id="tr-go">移動</button>
   </div>
   <div class="progbar" id="org-progress"></div>
+  <div id="pickbar"><span>📦</span><span id="pickbar-text"></span><span class="grow"></span><span class="kbd">Esc でも中止</span><button id="pick-cancel">キャンセル</button></div>
   <div class="split">
     <div class="pane src">
-      <div class="panehead"><b>現在のフォルダ構成</b><span class="muted kbd">Del:削除 M:移動 Backspace:解除 / ドラッグで右の仮想フォルダへ移動</span></div>
+      <div class="panehead"><b>現在のフォルダ構成</b><span class="muted kbd">右クリック:メニュー / ダブルクリック:ファイルを開く / ドラッグで右の仮想フォルダへ移動 / Del:削除 M:移動 Backspace:解除</span></div>
       <div id="tr-grid" class="grid"></div>
     </div>
     <div class="pane dst">
       <div class="panehead">
         <b>整理後のフォルダ構成(仮想)</b>
         <span class="grow"></span>
-        <button id="vt-new" title="選択中の仮想フォルダの下に作成">＋ フォルダ</button>
-        <button id="vt-rename">名前変更</button>
-        <button id="vt-del" class="danger">削除</button>
+        <span class="muted kbd">右クリック:メニュー</span>
+        <button id="vt-new" title="整理後のルート直下にフォルダを作成">＋ フォルダ</button>
         <button id="vt-warn" title="同じ階層に似た名前のフォルダ" hidden></button>
       </div>
-      <div class="panehead sub"><span id="vt-target" class="muted"></span><span class="grow"></span><button id="vt-moveto" class="primary" title="左で選択した項目を、右で選択中の仮想フォルダへ移動(キー M)">← 選択項目をここへ移動</button></div>
       <div id="vt-grid" class="grid"></div>
     </div>
   </div>
@@ -188,7 +190,6 @@ window.TOKEN = "__TOKEN__";
 <section id="view-actmerge" class="view scrollpage"></section>
 
 </div>
-<aside id="panel" hidden></aside>
 </div>
 
 <datalist id="taglist"></datalist>

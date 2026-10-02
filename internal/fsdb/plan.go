@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS plan(
 CREATE INDEX IF NOT EXISTS plan_vparent ON plan(vparent);
 CREATE TABLE IF NOT EXISTS tags(node_id INTEGER NOT NULL, tag TEXT NOT NULL, PRIMARY KEY(node_id, tag));
 CREATE INDEX IF NOT EXISTS tags_tag ON tags(tag);
+-- スキャン時の読み込みエラー(アクセス拒否など)
+CREATE TABLE IF NOT EXISTS node_errors(node_id INTEGER PRIMARY KEY, message TEXT NOT NULL);
 -- アクションが及ぶ範囲(互いに素な区間)。検索の「未処理/処理済み」絞り込み用
 CREATE TABLE IF NOT EXISTS plan_cover(s INTEGER PRIMARY KEY, e INTEGER NOT NULL);`
 

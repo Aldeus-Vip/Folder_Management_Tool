@@ -132,7 +132,7 @@ td.wrap { white-space: normal; word-break: break-all; }
 
 /* ---- 右パネル ---- */
 #panel { width: 340px; flex: none; background: var(--surface); border-left: 1px solid var(--line); overflow: auto; padding: 12px 14px; }
-#panel .path { font-family: var(--mono); font-size: 12px; word-break: break-all; background: var(--bg); padding: 6px 8px; border-radius: 6px; margin: 6px 0; }
+.path { font-family: var(--mono); font-size: 12px; word-break: break-all; background: var(--bg); padding: 6px 8px; border-radius: 6px; margin: 6px 0; }
 #panel dl { display: grid; grid-template-columns: 100px 1fr; gap: 3px 8px; margin: 8px 0; }
 #panel dt { color: var(--ink2); }
 #panel dd { margin: 0; }
@@ -236,3 +236,24 @@ td.wrap { white-space: normal; word-break: break-all; }
 .conf .ti { font-family: var(--mono); font-size: 12px; word-break: break-all; margin-bottom: 4px; }
 .conf label { display: block; padding: 3px 4px; border-radius: 4px; cursor: pointer; }
 .conf label:hover { background: var(--hover); }
+
+/* ---- 右クリックメニュー・移動先の選択・プロパティ ---- */
+#ctxmenu { position: fixed; z-index: 60; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px var(--shadow);
+  min-width: 240px; padding: 4px; display: flex; flex-direction: column; }
+#ctxmenu button { border: none; background: none; text-align: left; padding: 5px 10px; border-radius: 5px; display: flex; align-items: center; gap: 8px; }
+#ctxmenu button:hover:not(:disabled) { background: var(--hover); }
+#ctxmenu button .mi { width: 18px; text-align: center; }
+#ctxmenu button .kbd { margin-left: auto; padding-left: 16px; }
+#ctxmenu hr { border: none; border-top: 1px solid var(--line); margin: 3px 0; width: 100%; }
+#pickbar { display: none; align-items: center; gap: 10px; padding: 7px 12px; background: var(--amber-bg); color: var(--ink); border-bottom: 2px solid var(--amber); flex: none; font-weight: 600; }
+.picking #pickbar { display: flex; }
+.picking .pane.src { pointer-events: none; opacity: .45; }
+.picking .pane.dst { box-shadow: inset 0 0 0 3px var(--amber); }
+.picking #vt-grid .g-row.vdir { cursor: copy; }
+.picking #vt-grid .g-row.vdir:hover { background: var(--drop); }
+.picking #vt-grid .g-row:not(.vdir) { opacity: .6; }
+dl.props { display: grid; grid-template-columns: 110px 1fr; gap: 4px 10px; margin: 10px 0; }
+dl.props dt { color: var(--ink2); }
+dl.props dd { margin: 0; }
+.btns { display: flex; flex-wrap: wrap; gap: 6px; }
+label.inl { display: block; margin: 4px 0; }

@@ -111,7 +111,11 @@ func psQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + 
 
 // WritePlanScript は整理計画(削除・移動)を実行するPowerShellスクリプトを生成する。
 // 既定はドライラン(-Execute を付けたときだけ実際に変更)。
-func (s *Store) WritePlanScript(w io.Writer) error {
+// localPath は記録用のパスをこのPCでの実際のパスに読み替える(nil なら読み替えない)。
+func (s *Store) WritePlanScript(w io.Writer, localPath func(string) string) error {
+	if localPath == nil {
+		localPath = func(p string) string { return p }
+	}
 	if err := s.ensureIndex(); err != nil {
 		return err
 	}
@@ -183,7 +187,7 @@ if ($DryRun) { Write-Host '*** ドライラン(変更しません)。実行す�
 	b.WriteString("\n# ---- 削除・移動(子→親の順) ----\n")
 	for i := len(ns) - 1; i >= 0; i-- {
 		n := ns[i]
-		src := psQuote(n.Path)
+		src := psQuote(localPath(n.Path))
 		fmt.Fprintf(&b, "# [%s] %s", ActionLabel(n.Action), n.Path)
 		if n.Memo != "" {
 			fmt.Fprintf(&b, "  (メモ: %s)", strings.ReplaceAll(n.Memo, "\n", " "))

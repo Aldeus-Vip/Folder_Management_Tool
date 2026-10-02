@@ -20,4 +20,12 @@ func OpenBrowser(url string) error {
 
 func Reveal(path string, isDir bool) error { return ErrUnsupported }
 
+// OpenFile はファイルを既定のアプリで開く。
+func OpenFile(path string) error {
+	if runtime.GOOS == "darwin" {
+		return exec.Command("open", path).Start()
+	}
+	return exec.Command("xdg-open", path).Start()
+}
+
 func Alert(msg string, isError bool) { fmt.Fprintln(os.Stderr, msg) }

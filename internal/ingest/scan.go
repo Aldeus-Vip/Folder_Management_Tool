@@ -2,9 +2,12 @@ package ingest
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,7 +18,10 @@ import (
 // Scan は root 配下を並列に走査してDBを作る。ネットワークドライブでは通信待ちが
 // ボトルネックになるため、複数フォルダを同時に読み込む(workers 並列)。
 // シンボリックリンク・ジャンクションはたどらない(ループ防止)。
-func Scan(ctx context.Context, root, dbPath string, workers int, prog fsdb.Progress) (*Result, error) {
+//
+// alias を指定すると、DBにはそのパス(SharePoint の URL など)で記録する。OneDrive の同期フォルダのように
+// 人によって実際の場所が異なるフォルダを、全員が同じパスで扱うため。
+func Scan(ctx context.Context, root, dbPath string, workers int, alias string, prog fsdb.Progress) (*Result, error) {
 	if prog == nil {
 		prog = func(string, int64, int64) {}
 	}
@@ -31,6 +37,11 @@ func Scan(ctx context.Context, root, dbPath string, workers int, prog fsdb.Progr
 		workers = 16
 	}
 	b := fsdb.NewBuilder(root, string(filepath.Separator))
+	if strings.TrimSpace(alias) != "" {
+		ar, sep := fsdb.AliasRoot(alias)
+		b = fsdb.NewBuilder(ar, sep)
+		b.Meta["alias_root"], b.Meta["local_root"], b.Meta["local_sep"] = ar, root, string(filepath.Separator)
+	}
 	b.Recs[0].Mtime = st.ModTime().Unix()
 
 	var mu sync.Mutex
@@ -57,6 +68,10 @@ func Scan(ctx context.Context, root, dbPath string, workers int, prog fsdb.Progr
 			if ierr == nil {
 				r.Mtime = info.ModTime().Unix()
 				r.Size = info.Size()
+			} else {
+				r.Flags |= fsdb.FlagAccess
+				r.Err = errMessage(ierr)
+				errs.Add(1)
 			}
 			r.IsDir = e.IsDir() && e.Type()&os.ModeSymlink == 0
 			if r.IsDir {
@@ -68,6 +83,7 @@ func Scan(ctx context.Context, root, dbPath string, workers int, prog fsdb.Progr
 		mu.Lock()
 		if err != nil {
 			b.Recs[id].Flags |= fsdb.FlagAccess
+			b.Recs[id].Err = errMessage(err)
 			errs.Add(1)
 		}
 		ids := make([]int32, len(items))
@@ -115,7 +131,22 @@ func Scan(ctx context.Context, root, dbPath string, workers int, prog fsdb.Progr
 	}
 	res := &Result{Items: int64(len(b.Recs)), Errors: errs.Load()}
 	if errs.Load() > 0 {
-		res.Warnings = append(res.Warnings, fmt.Sprintf("アクセスできなかったフォルダが %d 件あります(「アクセス不可」で検索できます)", errs.Load()))
+		res.Warnings = append(res.Warnings, fmt.Sprintf("アクセスできなかった項目が %d 件あります(🔒 表示。中身・サイズは不明です。サマリーの「アクセス不可」から一覧できます)", errs.Load()))
 	}
 	return res, nil
+}
+
+// errMessage は読み込みエラーを利用者向けの文に直す(パスは行に表示されるので省く)。
+func errMessage(err error) string {
+	switch {
+	case errors.Is(err, fs.ErrPermission):
+		return "アクセス権がありません(アクセスが拒否されました)"
+	case errors.Is(err, fs.ErrNotExist):
+		return "見つかりません(スキャン中に移動・削除された可能性があります)"
+	}
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return "読み込めません: " + pe.Err.Error()
+	}
+	return "読み込めません: " + err.Error()
 }

@@ -57,7 +57,7 @@ func TestScan(t *testing.T) {
 	mk("z/c.txt", "hello")
 	os.MkdirAll(filepath.Join(root, "empty"), 0o755)
 	db := filepath.Join(t.TempDir(), "s.db")
-	res, err := Scan(context.Background(), root, db, 4, func(string, int64, int64) {})
+	res, err := Scan(context.Background(), root, db, 4, "", func(string, int64, int64) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,5 +74,31 @@ func TestScan(t *testing.T) {
 		if _, n, _ := s.Search(fsdb.Filter{Check: k}, 0, 1); n != want {
 			t.Errorf("%s=%d want %d", k, n, want)
 		}
+	}
+}
+
+func TestErrMessage(t *testing.T) {
+	if m := errMessage(&os.PathError{Op: "open", Path: `\\srv\秘密`, Err: os.ErrPermission}); m != "アクセス権がありません(アクセスが拒否されました)" {
+		t.Fatal(m)
+	}
+}
+
+func TestScanAlias(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "経理"), 0o755)
+	os.WriteFile(filepath.Join(root, "経理", "a.txt"), []byte("x"), 0o644)
+	db := filepath.Join(t.TempDir(), "s.db")
+	if _, err := Scan(context.Background(), root, db, 2, "https://example.sharepoint.com/sites/T/Shared Documents", nil); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := fsdb.Open(db)
+	defer s.Close()
+	ns, _, _ := s.Search(fsdb.Filter{Q: "a.txt"}, 0, 1)
+	if len(ns) != 1 || ns[0].Path != "https://example.sharepoint.com/sites/T/Shared Documents/経理/a.txt" {
+		t.Fatalf("%+v", ns)
+	}
+	m, _ := s.Meta()
+	if lp := fsdb.LocalPath(ns[0].Path, m, ""); lp != filepath.Join(root, "経理", "a.txt") {
+		t.Fatalf("local=%s", lp)
 	}
 }
