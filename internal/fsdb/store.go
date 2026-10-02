@@ -23,7 +23,7 @@ type Store struct {
 type Settings struct {
 	OldYears  int `json:"oldYears"`  // 更新から何年以上で「古い」とするか
 	PathLimit int `json:"pathLimit"` // パス文字数の警告閾値
-	DeepDepth int `json:"deepDepth"` // 階層が深すぎる閾値
+	DeepDepth int `json:"deepDepth"` // この階層以上を「深い」とする(ルート=階層0)
 	ManyFiles int `json:"manyFiles"` // 1フォルダ直下の項目数の閾値
 }
 
@@ -265,7 +265,7 @@ func checkCond(key string, st Settings) (string, []any) {
 	case "old":
 		return "n.is_dir=0 AND n.mtime>0 AND n.mtime<?", []any{time.Now().AddDate(-st.OldYears, 0, 0).Unix()}
 	case "deep":
-		return "n.depth>?", []any{st.DeepDepth}
+		return "n.depth>=?", []any{st.DeepDepth}
 	case "many":
 		return "n.is_dir=1 AND n.child_count>?", []any{st.ManyFiles}
 	case "longpath":

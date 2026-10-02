@@ -35,7 +35,7 @@ func WarnLabels(n *Node, st Settings) string {
 	if n.PathLen > st.PathLimit {
 		w = append(w, "パス長")
 	}
-	if n.Depth > st.DeepDepth {
+	if n.Depth >= st.DeepDepth {
 		w = append(w, "深い階層")
 	}
 	if n.IsDir && n.Children > int64(st.ManyFiles) {

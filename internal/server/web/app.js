@@ -85,7 +85,7 @@ function warnings(r) {
   if (f & FL.copy) add('org', 'コピー名', '「- コピー」「(1)」「新しいフォルダー」等');
   if (f & FL.version) add('org', '版管理名', '旧/old/bk/_v2/最新 等');
   if (f & FL.single) add('org', '1フォルダのみ', '中身がフォルダ1つだけ(階層を浅くできる候補)');
-  if (r.d > st.deepDepth) add('org', '深い', `階層${r.d}(閾値${st.deepDepth})`);
+  if (isDeep(r)) add('org', '深い', `階層${r.d}(${st.deepDepth}階層以上で警告)`);
   if (r.dir && r.cc > st.manyFiles) add('org', '項目過多', `直下に${r.cc}項目`);
   if (!r.dir && r.m > 0 && r.m < Date.now() / 1000 - st.oldYears * 365.25 * 86400) add('org', `${st.oldYears}年超`, `更新から${st.oldYears}年以上`);
   return w;
@@ -345,10 +345,13 @@ function fileIcon(x) {
   if (/^(mp4|mov|avi|wmv|mp3|wav|m4a)$/.test(x)) return '🎞';
   return '📄';
 }
-const rowClass = r => (r.f & MIG) || (r.pl > (S.settings?.pathLimit ?? 250)) ? 'mig' : (r.dir ? 'dir' : '');
+// 深い階層か(ルート=階層0。設定値「以上」で警告)
+const isDeep = r => r.d >= (S.settings?.deepDepth ?? 8);
+const rowClass = r => (r.f & MIG) || (r.pl > (S.settings?.pathLimit ?? 250)) ? 'mig' : isDeep(r) ? 'deep' : (r.dir ? 'dir' : '');
 
 // 列定義(画面ごとに組み合わせて使う)
 const COL = {
+  depth: { key: 'depth', label: '階層', w: 48, cls: 'num', sort: true, tip: 'ルート(選択フォルダ)を0とした階層の深さ', render: r => isDeep(r) ? `<b class="deepnum" title="${S.settings?.deepDepth ?? 8}階層以上">${r.d}</b>` : r.d },
   kind: { key: 'kind', label: '種別', w: 72, render: r => r.dir ? 'フォルダ' : 'ファイル', sort: true },
   ext: { key: 'ext', label: '拡張子', w: 60, render: r => esc(r.x), sort: true },
   mtime: { key: 'mtime', label: '更新日時', w: 128, render: r => fmtDate(r.m), sort: true, descFirst: true },
@@ -362,6 +365,28 @@ const COL = {
   path: { key: 'path', label: 'フルパス', w: 480, render: r => `<span title="${esc(r.path)}">${esc(r.path)}</span>`, sort: true },
 };
 const cols = (...ks) => ks.map(k => typeof k === 'string' ? { ...COL[k] } : k);
+
+// ===== 深い階層の警告しきい値(ツリー・エクスプローラーのツールバー) =====
+const DeepSetting = {
+  inputs: [],
+  bind(sel) {
+    const inp = $(sel);
+    this.inputs.push(inp);
+    inp.value = S.settings?.deepDepth ?? 8;
+    inp.onchange = guard(async () => {
+      const v = Math.max(1, Math.floor(+inp.value || 0));
+      S.settings = await api('/api/settings', { ...S.settings, deepDepth: v });
+      this.sync();
+      toast(`${v}階層以上を警告色で表示します`);
+    });
+  },
+  // 設定値を入力欄と表示中の表に反映する(DBを開き直したときも呼ぶ)
+  sync() {
+    this.inputs.forEach(i => i.value = S.settings?.deepDepth ?? 8);
+    for (const v of [Views.tree.grid, Views.explorer.tree, Views.explorer.list, Views.list.grid]) v?.render();
+    S.notesv++; // 他画面(サマリー等)も次回表示時に取り直す
+  },
+};
 
 // ===== 右パネル(詳細・編集) =====
 const Panel = {
@@ -477,6 +502,7 @@ async function refreshState() {
   S.actions = S.state.actions; S.checks = S.state.checks;
   const db = S.state.db;
   S.settings = db?.settings || null;
+  DeepSetting.inputs.forEach(i => i.value = S.settings?.deepDepth ?? 8);
   $('#dbname').textContent = db ? '📄 ' + db.path : 'DB未選択';
   $('#dbname').title = db ? db.path : '';
   $$('#nav .needdb').forEach(b => b.disabled = !db);
@@ -570,7 +596,7 @@ Views.summary = {
       ${m.source === 'excel' ? `<p class="hint">※ ${esc(m.size_note || '')}</p>` : ''}
       <div class="cols2">
         <div class="card"><h2>5S チェック</h2>
-          <p class="hint">件数をクリックすると該当項目の一覧を表示します。判定の閾値は <a id="sm-settings">設定</a> で変更できます(古い: ${st.oldYears}年 / パス長: ${st.pathLimit}文字 / 深い階層: ${st.deepDepth} / 項目過多: ${st.manyFiles})。</p>
+          <p class="hint">件数をクリックすると該当項目の一覧を表示します。判定の閾値は <a id="sm-settings">設定</a> で変更できます(古い: ${st.oldYears}年 / パス長: ${st.pathLimit}文字 / 深い階層: ${st.deepDepth}階層以上 / 項目過多: ${st.manyFiles})。</p>
           ${Object.entries(groups).map(([g, cs]) => `<div class="check-grp"><h3>${esc(gdesc[g] || g)}</h3><table class="t">
             ${cs.map(c => `<tr class="click" data-check="${c.key}"><td>${esc(c.label)}</td><td class="num">${fmtNum(c.count)} 件</td><td class="num muted">${c.size ? fmtSize(c.size) : ''}</td></tr>`).join('')}</table></div>`).join('')}
         </div>
@@ -580,7 +606,7 @@ Views.summary = {
           <div class="card"><h2>最終更新からの経過(ファイル)</h2><table class="t"><tr><th>経過</th><th class="num">件数</th><th class="num">サイズ</th><th></th></tr>
             ${sm.age.map(a => `<tr><td>${a.label}</td><td class="num">${fmtNum(a.count)}</td><td class="num">${fmtSize(a.size)}</td><td>${bar(a.count, maxAge)}</td></tr>`).join('')}</table></div>
           <div class="card"><h2>階層の深さ別の項目数</h2><table class="t"><tr><th>階層</th><th class="num">項目数</th><th class="num">ファイル容量</th><th></th></tr>
-            ${sm.depth.map(a => `<tr class="${+a.key > st.deepDepth ? 'click' : ''}" data-deep="${a.key}"><td>${a.label}${+a.key > st.deepDepth ? ' <span class="b org">深い</span>' : ''}</td><td class="num">${fmtNum(a.count)}</td><td class="num">${fmtSize(a.size)}</td><td>${bar(a.count, maxDepth)}</td></tr>`).join('')}</table></div>
+            ${sm.depth.map(a => `<tr class="${+a.key >= st.deepDepth ? 'click' : ''}" data-deep="${a.key}"><td>${a.label}${+a.key >= st.deepDepth ? ' <span class="b org">深い</span>' : ''}</td><td class="num">${fmtNum(a.count)}</td><td class="num">${fmtSize(a.size)}</td><td>${bar(a.count, maxDepth)}</td></tr>`).join('')}</table></div>
           <div class="card"><h2>拡張子 上位10(容量順)</h2><table class="t">
             ${sm.topExts.map(x => `<tr class="click" data-ext="${esc(x.key)}"><td>${esc(x.label)}</td><td class="num">${fmtNum(x.count)} 件</td><td class="num">${fmtSize(x.size)}</td></tr>`).join('')}</table>
             <p><a onclick="show('exts')">すべての拡張子を見る →</a></p></div>
@@ -600,7 +626,7 @@ Views.summary = {
     modal(`<h2>判定の閾値</h2><div class="form" style="grid-template-columns:220px 120px">
       <span>古いファイル(更新から○年以上)</span><input type="number" id="st-old" value="${st.oldYears}" min="1">
       <span>パス文字数の警告(○文字超)</span><input type="number" id="st-path" value="${st.pathLimit}" min="1">
-      <span>深い階層(○階層超)</span><input type="number" id="st-deep" value="${st.deepDepth}" min="1">
+      <span>深い階層(○階層以上で警告)</span><input type="number" id="st-deep" value="${st.deepDepth}" min="1">
       <span>項目過多(直下○項目超)</span><input type="number" id="st-many" value="${st.manyFiles}" min="1"></div>
       <p class="hint">パス文字数は選択フォルダからの相対パスです。SharePointの上限(400文字)は移行先のサイトURL等を含むため、余裕を持った値にしてください。</p>`,
       async m => {
@@ -628,6 +654,7 @@ Views.tree = {
           else if (!right && r.d > 0) { const pi = this.model.indexOf(r.p); if (pi >= 0) this.grid.moveTo(pi); }
         }),
       });
+      DeepSetting.bind('#tr-deep');
       $('#tr-gauge').value = this.gaugeMode();
       $('#tr-gauge').onchange = () => {
         store.set('fm-gauge', $('#tr-gauge').value);
@@ -654,7 +681,7 @@ Views.tree = {
   },
   gaugeMode() { return store.get('fm-gauge', 'parent'); },
   columns() {
-    const c = cols({ key: 'name', label: '名前(ツリー)', w: 460, render: r => nameCell(r, true) }, 'kind', 'mtime', 'size');
+    const c = cols({ key: 'name', label: '名前(ツリー)', w: 460, render: r => nameCell(r, true) }, 'depth', 'kind', 'mtime', 'size');
     const mode = this.gaugeMode();
     if (mode !== 'off') c.push({
       key: 'gauge', w: 150, label: mode === 'root' ? 'サイズ比(全体)' : 'サイズ比(親フォルダ内)',
@@ -700,19 +727,20 @@ Views.explorer = {
     if (!this.tree) {
       this.tree = new Grid($('#ex-tree'), {
         columns: [{ key: 'name', label: 'フォルダ', w: 600, render: r => nameCell(r, true) }],
-        rowClass: r => '',
+        rowClass: r => isDeep(r) ? 'deep' : '',
         onSelect: rows => rows[0] && this.open(rows[0].id, { fromTree: true }),
         onToggle: guard(async (r, i) => { r._open ? this.model.collapse(i) : await this.model.expand(i); this.tree.refresh(); }),
         onArrow: guard(async (r, i, right) => { if (right !== !!r._open && r._has) { right ? await this.model.expand(i) : this.model.collapse(i); this.tree.refresh(); } }),
       });
       this.list = new Grid($('#ex-list'), {
-        columns: cols({ key: 'name', label: '名前', w: 320, sort: true, render: r => nameCell(r, false) }, 'mtime', 'ext', { ...COL.size, w: 130, render: r => this.sizeCell(r) }, 'files', 'warn', 'action', 'owner', 'memo'),
+        columns: cols({ key: 'name', label: '名前', w: 320, sort: true, render: r => nameCell(r, false) }, 'depth', 'mtime', 'ext', { ...COL.size, w: 130, render: r => this.sizeCell(r) }, 'files', 'warn', 'action', 'owner', 'memo'),
         rowClass, sort: null,
         onSelect: rows => Panel.set(rows, this.list),
         onOpen: guard(r => r.dir ? this.open(r.id) : null),
         onSort: s => this.sortRows(s),
       });
       this.list.setEmpty('このフォルダは空です');
+      DeepSetting.bind('#ex-deep');
       $('#ex-up').onclick = guard(() => this.cur && this.cur.d > 0 && this.open(this.cur.p, { focus: this.cur.id }));
       $('#ex-back').onclick = guard(() => { this.hist.pop(); const h = this.hist.pop(); if (h) this.open(h); });
       $('#ex-q').onkeydown = e => { if (e.key === 'Enter' && this.cur) show('list', { under: this.cur.id, underPath: this.cur.path, q: e.target.value }); };
@@ -724,7 +752,7 @@ Views.explorer = {
     return `<div class="szbar"><i style="width:${Math.round(r.s / tot * 50)}px"></i>${fmtSize(r.s)}</div>`;
   },
   sortRows(s) {
-    const key = { name: r => r.n.toLowerCase(), mtime: r => r.m, ext: r => r.x, size: r => r.s, files: r => r.fc, action: r => r.act, owner: r => r.own }[s.key];
+    const key = { name: r => r.n.toLowerCase(), depth: r => r.d, mtime: r => r.m, ext: r => r.x, size: r => r.s, files: r => r.fc, action: r => r.act, owner: r => r.own }[s.key];
     if (!key || !this.rows) return;
     const d = s.desc ? -1 : 1;
     this.rows.sort((a, b) => (b.dir - a.dir) || (key(a) < key(b) ? -d : key(a) > key(b) ? d : 0));
@@ -738,7 +766,7 @@ Views.explorer = {
     this.rows = await api('/api/children?id=' + id);
     if (this.list.o.sort) this.sortRows(this.list.o.sort); else this.list.setSource(new ArraySource(this.rows));
     $('#ex-crumbs').innerHTML = [...ancestors, node].map(a => `<a data-id="${a.id}">${esc(a.d === 0 ? a.path : a.n)}</a>`).join('<span class="muted">›</span>') +
-      `<span class="muted" style="margin-left:8px">${fmtNum(node.cc)}項目 ・ ${fmtSize(node.s)}</span>`;
+      `<span class="muted" style="margin-left:8px">階層 ${node.d} ・ ${fmtNum(node.cc)}項目 ・ ${fmtSize(node.s)}</span>`;
     $$('#ex-crumbs a').forEach(a => a.onclick = guard(() => this.open(+a.dataset.id)));
     Panel.set([], this.list);
     if (!o.fromTree) {
@@ -765,7 +793,7 @@ Views.list = {
       $('#ls-check').innerHTML = '<option value="">警告・ヒント: 指定なし</option>' + S.checks.map(c => `<option value="${c.key}">[${esc(c.group)}] ${esc(c.label)}</option>`).join('');
       $('#ls-action').innerHTML = actionOptions('アクション');
       this.grid = new Grid($('#ls-grid'), {
-        columns: cols({ key: 'name', label: '名前', w: 260, sort: true, render: r => nameCell(r, false) }, 'kind', 'ext', 'mtime', 'size', 'files', 'warn', 'action', 'owner', 'memo', 'path'),
+        columns: cols({ key: 'name', label: '名前', w: 260, sort: true, render: r => nameCell(r, false) }, 'depth', 'kind', 'ext', 'mtime', 'size', 'files', 'warn', 'action', 'owner', 'memo', 'path'),
         rowClass,
         onSelect: rows => Panel.set(rows, this.grid),
         onOpen: r => Panel.go('explorer', r),
