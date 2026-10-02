@@ -16,6 +16,8 @@ func ActionLabel(a string) string {
 		return "削除"
 	case ActMove:
 		return "移動"
+	case ActHold:
+		return "保留"
 	}
 	return ""
 }
@@ -63,7 +65,7 @@ func (s *Store) WriteCSV(w io.Writer, f Filter) error {
 	cw := csv.NewWriter(w)
 	cw.UseCRLF = true
 	cw.Write([]string{"ID", "種別", "名前", "拡張子", "サイズ(KB)", "更新日時", "階層", "ファイル数(配下)", "パス文字数", "警告",
-		"アクション", "継承(親フォルダの設定)", "移動先(整理後)", "新しい名前", "期限", "タグ", "メモ", "作業者", "フルパス"})
+		"アクション", "継承(親フォルダの設定)", "移動先(整理後)", "新しい名前", "期限", "タグ", "担当", "メモ", "作業者", "5Sルール", "フルパス"})
 	err := s.SearchEach(f, func(n *Node) error {
 		kind := "ファイル"
 		files := ""
@@ -79,6 +81,10 @@ func (s *Store) WriteCSV(w io.Writer, f Filter) error {
 			}
 			dest = joinV(r.RootName, n.VPath, name)
 		}
+		owner := n.Owner
+		if owner == "" && n.IOwner != "" {
+			owner = n.IOwner + "(親フォルダ)"
+		}
 		inh := ""
 		if n.Action == "" && n.IAction != "" {
 			inh = ActionLabel(n.IAction)
@@ -88,7 +94,7 @@ func (s *Store) WriteCSV(w io.Writer, f Filter) error {
 		}
 		return cw.Write([]string{strconv.FormatInt(n.ID, 10), kind, n.Name, n.Ext, strconv.FormatFloat(float64(n.Size)/1024, 'f', 1, 64),
 			fmtTime(n.Mtime), strconv.Itoa(n.Depth), files, strconv.Itoa(n.PathLen), WarnLabels(n, st),
-			ActionLabel(n.Action), inh, dest, n.NewName, n.Due, strings.Join(n.Tags, ", "), n.Memo, n.Editor, n.Path})
+			ActionLabel(n.Action), inh, dest, n.NewName, n.Due, strings.Join(n.Tags, ", "), owner, n.Memo, n.Editor, strings.ReplaceAll(n.RuleMsg, "\n", " / "), n.Path})
 	})
 	cw.Flush()
 	if err != nil {
@@ -123,7 +129,7 @@ func (s *Store) WritePlanScript(w io.Writer, localPath func(string) string) erro
 	r := s.Rules()
 	var ns []Node
 	if err := s.SearchEach(Filter{State: "own"}, func(n *Node) error {
-		if n.Action != "" {
+		if n.Action != "" && n.Action != ActHold { // 保留は何もしない
 			ns = append(ns, *n)
 		}
 		return nil

@@ -15,11 +15,17 @@ type Store struct {
 	DB   *sql.DB
 	Path string
 
-	mu      sync.Mutex
-	summary *Summary   // 静的部分のキャッシュ(ノードは構築後に変わらないため)
-	pre     *prefix    // ID順のファイル数・サイズの累積(未処理件数の計算用)
-	pidx    *planIndex // アクションの区間インデックス(nil=再構築が必要)
-	vt      *vtree     // 仮想フォルダ構成のキャッシュ(nil=再構築が必要)
+	mu         sync.Mutex
+	summary    *Summary   // 静的部分のキャッシュ(ノードは構築後に変わらないため)
+	pre        *prefix    // ID順のファイル数・サイズの累積(未処理件数の計算用)
+	pidx       *planIndex // アクションの区間インデックス(nil=再構築が必要)
+	vt         *vtree     // 仮想フォルダ構成のキャッシュ(nil=再構築が必要)
+	oidx       *ownerIndex
+	rulesCache *ruleSet        // 仮想ツリーを読み込んだときのルール
+	vviol      []RuleViolation // 整理後の構成のルール違反(キャッシュ)
+	gen        int64           // 編集のたびに増える(キャッシュの判定用)
+	vviolMu    sync.Mutex      // ルール違反の計算は同時に1つだけ
+	tf         map[string]*TreeFilter
 }
 
 // Settings は後から変更できる判定閾値(meta テーブルに保存)。
@@ -140,6 +146,10 @@ type Node struct {
 	Memo    string   `json:"memo"`
 	Editor  string   `json:"ed"` // 設定した作業者コード
 	Tags    []string `json:"tags"`
+	Owner   string   `json:"own"`           // 担当(この項目に設定)
+	IOwner  string   `json:"iown"`          // 担当(親フォルダから引き継ぎ)
+	RuleMsg string   `json:"r5s,omitempty"` // 5Sルールに合わない点(現在の構成に当てはめた場合)
+	TF      int      `json:"tf,omitempty"`  // ツリーの絞り込み: 1=該当 2=該当項目への経路
 
 	// 親フォルダから引き継いだアクション(自身に設定が無い場合)
 	IAction string `json:"ia"`
@@ -158,14 +168,15 @@ const nodeCols = `n.id, COALESCE(n.parent_id,0), n.end_id, n.depth, n.is_dir, n.
  n.child_count, n.file_count, n.dir_count, n.path_len, n.flags, n.path,
  COALESCE(p.action,''), COALESCE(p.vparent,''), COALESCE(p.new_name,''), COALESCE(p.due,''), COALESCE(p.memo,''), COALESCE(p.editor,''),
  COALESCE((SELECT group_concat(g.tag, char(31)) FROM tags g WHERE g.node_id = n.id),''),
- COALESCE((SELECT message FROM node_errors e WHERE e.node_id = n.id),'')`
+ COALESCE((SELECT message FROM node_errors e WHERE e.node_id = n.id),''), COALESCE(p.owner,''),
+ COALESCE((SELECT msg FROM rule_hits h WHERE h.node_id = n.id),'')`
 const nodeFrom = ` FROM nodes n LEFT JOIN plan p ON p.node_id = n.id `
 
 func scanNode(rows *sql.Rows, x *Node) error {
 	var tags string
 	err := rows.Scan(&x.ID, &x.Parent, &x.End, &x.Depth, &x.IsDir, &x.Name, &x.Ext, &x.Size, &x.Mtime,
 		&x.Children, &x.Files, &x.Dirs, &x.PathLen, &x.Flags, &x.Path,
-		&x.Action, &x.VParent, &x.NewName, &x.Due, &x.Memo, &x.Editor, &tags, &x.Err)
+		&x.Action, &x.VParent, &x.NewName, &x.Due, &x.Memo, &x.Editor, &tags, &x.Err, &x.Owner, &x.RuleMsg)
 	x.Tags = []string{}
 	if tags != "" {
 		x.Tags = strings.Split(tags, "\x1f")
@@ -212,7 +223,8 @@ func (s *Store) Ancestors(id int64) ([]Node, error) {
 }
 
 // Children は直下の項目を返す。hidePlanned=true ならアクション設定済みの項目を除く。
-func (s *Store) Children(id int64, dirsOnly, hidePlanned bool) ([]Node, error) {
+// tf を指定すると、絞り込みに該当する項目(とそこへの経路)だけを返す。
+func (s *Store) Children(id int64, dirsOnly, hidePlanned bool, tf *TreeFilter) ([]Node, error) {
 	q := `SELECT ` + nodeCols + nodeFrom + ` WHERE n.parent_id=?`
 	if dirsOnly {
 		q += ` AND n.is_dir=1`
@@ -220,12 +232,13 @@ func (s *Store) Children(id int64, dirsOnly, hidePlanned bool) ([]Node, error) {
 	if hidePlanned {
 		q += ` AND COALESCE(p.action,'')=''`
 	}
-	return s.query(q+` ORDER BY n.id`, id)
+	ns, err := s.query(q+` ORDER BY n.id`, id)
+	return tf.apply(ns), err
 }
 
 // Subtree は id 配下を maxDepth 階層分まとめて返す(limit 超過時はエラー)。
 // hidePlanned=true ならアクション設定済みの項目とその配下を除く。
-func (s *Store) Subtree(id int64, maxDepth int, dirsOnly, hidePlanned bool, limit int) ([]Node, error) {
+func (s *Store) Subtree(id int64, maxDepth int, dirsOnly, hidePlanned bool, limit int, tf *TreeFilter) ([]Node, error) {
 	nd, err := s.Node(id)
 	if err != nil {
 		return nil, err
@@ -256,7 +269,7 @@ func (s *Store) Subtree(id int64, maxDepth int, dirsOnly, hidePlanned bool, limi
 		}
 		ns = out
 	}
-	return ns, nil
+	return tf.apply(ns), nil
 }
 
 func (s *Store) FindPath(p string) (int64, error) {
@@ -284,6 +297,7 @@ type Filter struct {
 	State   string // 処理状況: unhandled | handled | delete | move | own
 	Editor  string
 	Tag     string
+	Owner   string // 担当(親フォルダからの引き継ぎを含む)。"-" = 担当なし
 	VParent string // 移動先の仮想フォルダ(その配下を含む)
 	Sort    string
 	Desc    bool
@@ -294,7 +308,7 @@ func FilterFromQuery(v url.Values) Filter {
 	return Filter{
 		Q: strings.TrimSpace(v.Get("q")), Kind: v.Get("kind"), Ext: strings.ToLower(strings.TrimPrefix(strings.TrimSpace(v.Get("ext")), ".")),
 		Under: i64("under"), MinSize: i64("minSize"), MaxSize: i64("maxSize"), Before: i64("before"),
-		Check: v.Get("check"), State: v.Get("state"), Editor: v.Get("editor"), Tag: v.Get("tag"), VParent: v.Get("vparent"),
+		Check: v.Get("check"), State: v.Get("state"), Editor: v.Get("editor"), Tag: v.Get("tag"), Owner: v.Get("owner"), VParent: v.Get("vparent"),
 		Sort: v.Get("sort"), Desc: v.Get("desc") == "1",
 	}
 }
@@ -319,6 +333,7 @@ var CheckDefs = []struct {
 	{"reserved", "予約語", "移行(SharePoint)"},
 	{"longpath", "パスが長い", "移行(SharePoint)"},
 	{"access", "アクセス不可", "移行(SharePoint)"},
+	{"rule5s", "5Sルールに合わない(現在の構成に当てはめた場合)", "5Sルール"},
 }
 
 func checkCond(key string, st Settings) (string, []any) {
@@ -337,6 +352,8 @@ func checkCond(key string, st Settings) (string, []any) {
 		return "n.is_dir=1 AND n.child_count>?", []any{st.ManyFiles}
 	case "longpath":
 		return "n.path_len>?", []any{st.PathLimit}
+	case "rule5s":
+		return "n.id IN (SELECT node_id FROM rule_hits)", nil
 	case "migration":
 		return "(n.flags & ? != 0 OR n.path_len>?)", []any{FlagBadChar | FlagTrailing | FlagReserved | FlagAccess, st.PathLimit}
 	}
@@ -403,8 +420,15 @@ func (s *Store) where(f Filter) (string, []any, error) {
 		add(coveredExpr)
 	case "own":
 		add("(p.action IS NOT NULL AND (p.action!='' OR p.memo!='' OR p.due!=''))")
-	case ActDelete, ActMove:
+	case ActDelete, ActMove, ActHold:
 		add("p.action=?", f.State)
+	case "ihold": // 保留(親フォルダの設定を含む)
+		tf, err := s.TreeFilterFor("", "hold")
+		if err != nil {
+			return "", nil, err
+		}
+		c, a := segsCond(tf.segs)
+		add(c, a...)
 	default:
 		return "", nil, fmt.Errorf("不明な処理状況: %s", f.State)
 	}
@@ -413,6 +437,14 @@ func (s *Store) where(f Filter) (string, []any, error) {
 	}
 	if f.Tag != "" {
 		add("EXISTS (SELECT 1 FROM tags g WHERE g.node_id=n.id AND g.tag=?)", f.Tag)
+	}
+	if f.Owner != "" {
+		tf, err := s.TreeFilterFor(f.Owner, "")
+		if err != nil {
+			return "", nil, err
+		}
+		c, a := segsCond(tf.segs)
+		add(c, a...)
 	}
 	if f.VParent != "" {
 		ids := s.vSubtreeIDs(f.VParent)
@@ -432,7 +464,7 @@ func (s *Store) where(f Filter) (string, []any, error) {
 func orderBy(f Filter) string {
 	col := map[string]string{"name": "n.name_lc", "size": "n.size", "mtime": "n.mtime", "path": "n.path", "depth": "n.depth",
 		"pathlen": "n.path_len", "ext": "n.ext", "kind": "n.is_dir", "files": "n.file_count", "children": "n.child_count",
-		"action": "p.action", "editor": "p.editor", "due": "p.due"}[f.Sort]
+		"action": "p.action", "editor": "p.editor", "due": "p.due", "owner": "p.owner"}[f.Sort]
 	if col == "" {
 		col = "n.id"
 	}

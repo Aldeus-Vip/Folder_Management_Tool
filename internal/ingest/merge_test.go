@@ -95,7 +95,7 @@ func TestMergeVirtualRoot(t *testing.T) {
 	}
 	s, _ := fsdb.Open(out)
 	defer s.Close()
-	kids, _ := s.Children(1, false, false)
+	kids, _ := s.Children(1, false, false, nil)
 	var names []string
 	for _, k := range kids {
 		names = append(names, k.Path)

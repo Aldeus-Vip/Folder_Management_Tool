@@ -66,7 +66,7 @@ const S = {
   state: null, settings: null, rules: null, checks: [], code: '',
   dbv: 0,     // DBを開き直すたびに増える(各画面の再初期化判定)
   planv: 0,   // アクションが変わるたびに増える(画面の再読み込み判定)
-  tags: [],
+  tags: [], owners: [],
   sel: [], selGrid: null, view: 'import',
   vTarget: 'root', vTargetPath: '',
 };
@@ -74,7 +74,7 @@ const S = {
 // フラグ(Go側 fsdb/flags.go と同じ値)
 const FL = { badchar: 1, trailing: 2, reserved: 4, access: 8, empty: 16, temp: 32, copy: 64, version: 128, single: 256, dup: 512 };
 const MIG = FL.badchar | FL.trailing | FL.reserved | FL.access;
-const ACT = { delete: '削除', move: '移動' };
+const ACT = { delete: '削除', move: '移動', hold: '保留' };
 
 function warnings(r) {
   const st = S.settings || { oldYears: 3, pathLimit: 250, deepDepth: 8, manyFiles: 500 };
@@ -94,6 +94,7 @@ function warnings(r) {
   if (isDeep(r)) add('org', '深い', `階層${r.d}(${st.deepDepth}階層以上で警告)`);
   if (r.dir && r.cc > st.manyFiles) add('org', '項目過多', `直下に${r.cc}項目`);
   if (!r.dir && r.m > 0 && r.m < Date.now() / 1000 - st.oldYears * 365.25 * 86400) add('org', `${st.oldYears}年超`, `更新から${st.oldYears}年以上`);
+  if (r.r5s) w.unshift({ c: 'r5s', l: '⛔5S外れ', t: r.r5s });
   return w;
 }
 const warnHTML = r => warnings(r).map(x => `<span class="b ${x.c}" title="${esc(x.t)}">${esc(x.l)}</span>`).join('');
@@ -102,18 +103,20 @@ const eff = r => r.act || r.ia || '';
 const rowClass = r => {
   const e = eff(r);
   const base = (r.f & MIG) || (r.pl > (S.settings?.pathLimit ?? 250)) ? 'mig' : isDeep(r) ? 'deep' : (r.dir ? 'dir' : '');
-  return base + (e === 'delete' ? ' del' : e === 'move' ? ' mov' : '');
+  return base + (e === 'delete' ? ' del' : e === 'move' ? ' mov' : e === 'hold' ? ' hold' : '') + (r.r5s ? ' r5s' : '') + (r.tf === 2 ? ' tfpath' : '');
 };
 const vroot = () => S.rules?.rootName || '整理後';
 const vpathLabel = p => p ? vroot() + '\\' + p : vroot();
 
 function actHTML(r) {
   if (r.act === 'delete') return `<span class="actb delete">削除</span>${memoMark(r)}`;
+  if (r.act === 'hold') return `<span class="actb hold">⏸ 保留</span>${memoMark(r)}`;
   if (r.act === 'move') return `<span class="actb move">移動</span> <span title="${esc(vpathLabel(r.vpath))}">→ ${esc(vpathLabel(r.vpath))}</span>${r.nn ? ` <span class="muted">名前: ${esc(r.nn)}</span>` : ''}${memoMark(r)}`;
   if (r.ia) return `<span class="actb inh" title="親フォルダに設定されたアクションが及んでいます">親で${ACT[r.ia]}</span>${r.ivpath ? ` <span class="muted">→ ${esc(vpathLabel(r.ivpath))}</span>` : ''}${memoMark(r)}`;
   return memoMark(r);
 }
 const memoMark = r => r.memo ? ` <span title="${esc(r.memo)}">📝</span>` : '';
+const ownerHTML = r => r.own ? `<span class="own" title="担当(このフォルダに設定)">👤 ${esc(r.own)}</span>` : r.iown ? `<span class="iown" title="担当(親フォルダから引き継ぎ)">${esc(r.iown)}</span>` : '';
 const tagsHTML = tags => (tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('');
 function dueHTML(due) {
   if (!due) return '';
@@ -362,7 +365,7 @@ class TreeModel {
   get(i) { return this.rows[i]; }
   forEach(fn) { this.rows.forEach(fn); }
   key(r) { return r.id; }
-  q() { return (this.o.dirs ? '&dirs=1' : '') + (this.o.hide ? '&hide=1' : ''); }
+  q() { return (this.o.dirs ? '&dirs=1' : '') + (this.o.hide ? '&hide=1' : '') + (this.o.owner ? '&owner=' + encodeURIComponent(this.o.owner) : '') + (this.o.tf ? '&tf=' + this.o.tf : ''); }
   hasKids(r) { return r.dir && (this.o.dirs ? r.dc > 0 : r.cc > 0); }
   prep(r, parent) {
     r._anc = parent ? parent._anc + (parent.d >= 1 ? (parent._last ? '　' : '┃') : '') : '';
@@ -453,7 +456,7 @@ class VTreeModel extends TreeModel {
 function vrow(v) {
   const r = Object.assign({}, v);
   if (r.node) { // 実フォルダ/ファイルはノードの情報も行に持たせる(パネル・警告表示用)
-    for (const k of ['id', 'dir', 'x', 'm', 'f', 'pl', 'act', 'ia', 'nn', 'due', 'memo', 'tags', 'path', 'ivpath', 'ed', 'p', 'e', 'cc', 'dc', 'rem']) r[k] = r.node[k];
+    for (const k of ['id', 'dir', 'x', 'm', 'f', 'pl', 'act', 'ia', 'nn', 'due', 'memo', 'tags', 'path', 'ivpath', 'ed', 'p', 'e', 'cc', 'dc', 'rem', 'own', 'iown', 'r5s', 'err']) r[k] = r.node[k];
     r.nvpath = r.node.vpath;
     r.realD = r.node.d;
   }
@@ -492,6 +495,7 @@ const COL = {
   warn: { key: 'warn', label: '警告・整理のヒント', w: 200, render: warnHTML },
   action: { key: 'action', label: 'アクション(移動先)', w: 250, render: actHTML, sort: true },
   tags: { key: 'tags', label: 'タグ', w: 140, render: r => tagsHTML(r.tags) },
+  owner: { key: 'owner', label: '担当', w: 100, render: ownerHTML, sort: true, tip: '担当(フォルダに設定すると配下に引き継がれます)' },
   due: { key: 'due', label: '期限', w: 96, render: r => dueHTML(r.due), sort: true },
   memo: { key: 'memo', label: 'メモ', w: 180, render: r => esc(r.memo) },
   editor: { key: 'editor', label: '作業者', w: 100, render: r => esc(r.ed), sort: true },
@@ -506,6 +510,19 @@ const Plan = {
     const ids = this.ids(rows); if (!ids.length) return;
     const r = await api('/api/plan/delete', { ids });
     toast(`${fmtNum(r.applied)}件に「削除」を設定しました`);
+    await afterEdit();
+  },
+  async hold(rows) {
+    const ids = this.ids(rows); if (!ids.length) return;
+    const r = await api('/api/plan/hold', { ids });
+    toast(`${fmtNum(r.applied)}件を「保留」にしました`);
+    await afterEdit();
+  },
+  async owner(rows, owner) {
+    const ids = this.ids(rows); if (!ids.length) return;
+    const r = await api('/api/plan/owner', { ids, owner });
+    toast(owner ? `${fmtNum(r.applied)}件の担当を「${owner}」にしました` : `${fmtNum(r.applied)}件の担当を解除しました`);
+    await loadOwners();
     await afterEdit();
   },
   async clear(rows) {
@@ -686,10 +703,15 @@ function actionItems(rows) {
   return [
     { label: `移動…${nodes.length > 1 ? `(${nodes.length}件)` : ''}`, icon: '📦', key: 'M', onClick: () => MoveFlow.start(nodes) },
     { label: `削除${nodes.length > 1 ? `(${nodes.length}件)` : ''}`, icon: '🗑', key: 'Del', onClick: () => Plan.delete(nodes) },
+    { label: `保留${nodes.length > 1 ? `(${nodes.length}件)` : ''}`, icon: '⏸', key: 'H', title: '判断を後回しにする(あとで「保留のみ」で一覧できます)', onClick: () => Plan.hold(nodes) },
     { label: '解除', icon: '↺', key: 'Backspace', disabled: !anyOwn, title: anyOwn ? '' : 'アクションが設定されていません(親フォルダの設定は、親フォルダで解除してください)', onClick: () => Plan.clear(nodes.filter(r => r.act)) },
     '-',
+    ...ownerItems(nodes),
     { label: 'タグ / メモの編集…', icon: '🏷', onClick: () => EditNotes.show(nodes) },
   ];
+}
+function ownerItems(nodes) {
+  return [{ label: `担当の設定…${nodes.length > 1 ? `(${nodes.length}件)` : ''}`, icon: '👤', title: 'フォルダに設定すると配下すべての担当になります', onClick: () => OwnerEdit.show(nodes) }];
 }
 
 // ===== プロパティ =====
@@ -712,7 +734,9 @@ const Props = {
       <dt>警告・ヒント</dt><dd>${warnHTML(n.f !== undefined ? n : r) || '<span class="muted">なし</span>'}</dd>
       <dt>整理アクション</dt><dd>${st}${r.ed ? ` <span class="muted">(${esc(r.ed)})</span>` : ''}</dd>
       <dt>期限</dt><dd>${r.due ? dueHTML(r.due) : '<span class="muted">永続(期限なし)</span>'}</dd>
+      <dt>担当</dt><dd>${ownerHTML(r) || '<span class="muted">なし</span>'}</dd>
       <dt>タグ</dt><dd>${tagsHTML(r.tags) || '<span class="muted">なし</span>'}</dd>
+      ${r.r5s ? `<dt>5Sルール</dt><dd><div class="issue block" style="margin:0">${esc(r.r5s).replace(/\n/g, '<br>')}</div></dd>` : ''}
       <dt>メモ</dt><dd style="white-space:pre-wrap">${esc(r.memo) || '<span class="muted">なし</span>'}</dd></dl>
       <div class="btns">${r.dir ? '' : '<button data-p="open">📂 ファイルを開く</button>'}<button data-p="reveal">Windowsで開く(場所を表示)</button><button data-p="copy">パスをコピー</button></div>`, null, '', '閉じる');
     $$('[data-p]', m).forEach(b => b.onclick = guard(async () => {
@@ -848,6 +872,41 @@ const EditNotes = {
       async () => { await api('/api/vmemo', { uuid: v.uuid, memo: $('#ev-memo').value }); toast('保存しました'); await afterEdit(); }, '保存');
   },
 };
+// ===== 担当の設定(フォルダに設定すると配下に引き継がれる。担当ごとに作業用コピーで判断し、最後に統合する) =====
+const OwnerEdit = {
+  show(rows) {
+    const nodes = rows.filter(r => typeof r.id === 'number' && r.kind !== 'vdir');
+    if (!nodes.length) return;
+    const one = nodes.length === 1 ? nodes[0] : null;
+    const cur = one ? (one.own || '') : '';
+    const m = modal(`<h2>👤 担当の設定${one ? `: ${esc(one.node?.n ?? one.n)}` : `(${nodes.length}件)`}</h2>
+      <p class="hint">フォルダに担当を設定すると、<b>配下すべてがその担当</b>になります(配下で別の担当を設定した場合はそちらを優先)。<br>
+      整理画面の「担当」で絞り込むと、担当者が自分の範囲だけを見て判断できます。担当者ごとに作業用コピーで作業し、最後に「アクションの統合」でまとめます。</p>
+      ${one?.iown && !one.own ? `<p class="hint">現在は親フォルダから「${esc(one.iown)}」を引き継いでいます。</p>` : ''}
+      <div class="form" style="grid-template-columns:80px 1fr"><span>担当</span><input type="text" id="ow-name" list="ownerlist" value="${esc(cur)}" placeholder="例: 業務推進課 / 山田"></div>
+      <datalist id="ownerlist">${S.owners.map(o => `<option value="${esc(o.key)}">`).join('')}</datalist>
+      <div style="margin-top:8px">${S.owners.slice(0, 20).map(o => `<button class="mini" data-o="${esc(o.key)}">${esc(o.key)}</button>`).join(' ')}</div>
+      <div style="margin-top:10px"><button id="ow-clear" ${nodes.some(r => r.own) ? '' : 'disabled'}>担当を解除する(親フォルダの担当に戻す)</button></div>`,
+      async mm => {
+        const v = $('#ow-name', mm).value.trim();
+        if (!v) { toast('担当を入力してください(解除は「担当を解除する」)', true); return false; }
+        await Plan.owner(nodes, v);
+      }, '設定');
+    $$('[data-o]', m).forEach(b => b.onclick = () => { $('#ow-name', m).value = b.dataset.o; });
+    $('#ow-clear', m).onclick = guard(async () => { closeModal(); await Plan.owner(nodes.filter(r => r.own), ''); });
+    setTimeout(() => $('#ow-name', m)?.focus(), 50);
+  },
+};
+async function loadOwners() {
+  try { S.owners = await api('/api/owners'); } catch (e) { S.owners = []; }
+  Views.organize.ownerOptions?.(); Views.list.ownerOptions?.(); Views.plan.ownerOptions?.();
+}
+function ownerOptionsHTML(cur, allLabel) {
+  const has = S.owners.some(o => o.key === cur);
+  return `<option value="">${allLabel}</option>` + S.owners.map(o => `<option value="${esc(o.key)}">👤 ${esc(o.key)}(${fmtNum(o.size)}ファイル)</option>`).join('')
+    + `<option value="-">担当なし(未割り当て)</option>` + (cur && cur !== '-' && !has ? `<option value="${esc(cur)}">${esc(cur)}</option>` : '');
+}
+
 function updateTagList() { $('#taglist').innerHTML = S.tags.map(t => `<option value="${esc(t)}">`).join(''); }
 async function loadTags() { try { S.tags = (await api('/api/tags')).map(t => t.key); updateTagList(); } catch (e) { } }
 
@@ -932,7 +991,7 @@ async function refreshState() {
 }
 function dbOpened() {
   S.dbv++; S.planv++;
-  loadTags();
+  loadTags(); loadOwners();
 }
 async function reopened(msg) {
   await refreshState(); dbOpened();
@@ -997,16 +1056,83 @@ const FileMenu = {
   quit() { Life.quit(); },
 };
 
-// ===== オプション =====
+// ===== オプション(タブで分類) =====
+const MODES = [['block', '禁止'], ['warn', '警告のみ'], ['off', '無効']];
+const modeSel = (cls, v) => `<select class="${cls}">${MODES.map(([k, l]) => `<option value="${k}" ${v === k ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+const CATS = [
+  ['整理', '不要なファイルを削除する。判断基準を決めて捨てる'],
+  ['整頓', '必要なファイルを「あるべき場所」へ格納・命名する。命名/格納ルールを決め、誰が見ても分かる状態にする'],
+  ['清掃', '定期的な棚卸し・チェック。旧版・不要なコピーを残さず、最新の状態を保つ'],
+  ['清潔', '整理・整頓・清掃のルールを維持し、形式を統一する(名前の付け方・使える文字など)'],
+  ['躾', '担当・役割・目的を明確にし、全員が自然に実践できるようにする'],
+];
+// 名前の条件(Go側 fsdb/rules.go と同じ)
+const COND_OPS = [
+  ['contains', '名前に次の語のどれかを含む'], ['notcontains', '名前に次の語を含まない'],
+  ['chars', '名前に次の文字のどれかを含む'], ['nochars', '名前に次の文字を含まない'],
+  ['prefix', '名前が次の語で始まる'], ['suffix', '名前が次の語で終わる'],
+  ['format', '名前が決まった形式'], ['regex', '名前が正規表現に一致する'], ['notregex', '名前が正規表現に一致しない'],
+  ['maxlen', '名前の文字数が次の数以下'],
+];
+const MUST_OPS = [['forbid', '置けない(禁止)'], ...COND_OPS, ['haschild', '直下に次のフォルダがある(必須フォルダ)']];
+const FORMATS = [['num3', '数字3桁_名前(例: 010_経理)'], ['alnum3', '英数字3文字_名前(例: A01_経理)'], ['any3', '任意の3文字_名前']];
+const VAL_HINT = {
+  contains: '例: 旧, OLD, ゴミ箱(「,」区切り)', notcontains: '例: 旧, OLD, ゴミ箱(「,」区切り)', chars: '例: #%&', nochars: '例: #%&',
+  prefix: '例: 0, 1(「,」区切り)', suffix: '例: 課, 部', regex: '例: ^[0-9]{3}_', notregex: '例: (^|_)old($|_)', maxlen: '例: 30',
+  haschild: '例: 規定|SOP, 契約(「,」= すべて必要 /「|」= どれか)',
+};
+function condTextJS(c) {
+  const q = () => '「' + (c.val || '').split(/[,、\n]/).map(x => x.trim()).filter(Boolean).join('」「') + '」';
+  switch (c.op) {
+    case 'contains': return `名前に${q()}のどれかを含む`;
+    case 'notcontains': return `名前に${q()}を含まない`;
+    case 'chars': return `名前に文字「${c.val}」のどれかを含む`;
+    case 'nochars': return `名前に文字「${c.val}」を含まない`;
+    case 'prefix': return `名前が${q()}で始まる`;
+    case 'suffix': return `名前が${q()}で終わる`;
+    case 'regex': return `名前が正規表現 ${c.val} に一致する`;
+    case 'notregex': return `名前が正規表現 ${c.val} に一致しない`;
+    case 'format': return `名前が「${(FORMATS.find(f => f[0] === c.val) || [, c.val])[1]}」の形式`;
+    case 'maxlen': return `名前が${c.val}文字以内`;
+    case 'haschild': return `直下に${q()}のフォルダがある`;
+    case 'forbid': return '置けない';
+  }
+  return '';
+}
+function describeRule(c) {
+  const kind = { dir: 'フォルダ', file: 'ファイル' }[c.kind] || 'フォルダ・ファイル';
+  let scope = { eq: `第${c.depth}階層の`, ge: `第${c.depth}階層以下(深い側)の`, le: `第${c.depth}階層までの`, range: `第${c.depth}〜${c.depth2}階層の` }[c.depthOp] || 'すべての';
+  if (c.when?.op) scope += `(${condTextJS(c.when)})`;
+  return `${scope}${kind}: ${condTextJS(c.must)}${c.must.op === 'forbid' ? '' : 'こと'}`;
+}
+// 「ファイル整理方針」に沿った初期ルール(Go側 DefaultCustomRules と同じ)
+const PRESETS = [
+  { id: 'top-name', cat: '整頓', label: '上位階層のフォルダ名は「3桁の番号_名前」', mode: 'warn', kind: 'dir', depthOp: 'le', depth: 3, depth2: 0, when: { op: '', val: '' }, must: { op: 'format', val: 'num3' } },
+  { id: 'top-file', cat: '整頓', label: '上位階層(第3階層まで)にはファイルを置かない', mode: 'warn', kind: 'file', depthOp: 'le', depth: 3, depth2: 0, when: { op: '', val: '' }, must: { op: 'forbid', val: '' } },
+  { id: 'required', cat: '整頓', label: '各課に「規定／SOP」「契約」フォルダを設置する', mode: 'off', kind: 'dir', depthOp: 'eq', depth: 2, depth2: 0, when: { op: 'contains', val: '課' }, must: { op: 'haschild', val: '規定|SOP, 契約' } },
+  { id: 'old', cat: '清掃', label: '旧版・ゴミ箱のようなフォルダを残さない(バージョン履歴で管理)', mode: 'warn', kind: 'dir', depthOp: '', depth: 0, depth2: 0, when: { op: '', val: '' }, must: { op: 'notregex', val: '(^|[^a-z])(old|bk|backup)([^a-z]|$)|旧版|ゴミ箱|ごみ箱|まもなく消去|削除予定' } },
+  { id: 'temp', cat: '整理', label: '一時・システムファイルは移動しない', mode: 'warn', kind: 'file', depthOp: '', depth: 0, depth2: 0, when: { op: '', val: '' }, must: { op: 'notregex', val: '^~\\$|\\.tmp$|^thumbs\\.db$|^desktop\\.ini$|^\\.ds_store$' } },
+];
+
 const Options = {
-  open() {
+  tab: 'general', sub: '整頓',
+  open(tab) {
+    if (tab) this.tab = tab;
     const db = S.state?.db, m = db?.meta || {}, st = S.settings || {}, ru = S.rules || {};
     const t = store.get('fm-theme', 'auto');
-    const mode = (id, v) => `<select id="${id}">${[['block', '禁止'], ['warn', '警告のみ'], ['off', '無効']].map(([k, l]) => `<option value="${k}" ${v === k ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+    this.custom = JSON.parse(JSON.stringify(ru.custom || [])).map(c => ({ when: { op: '', val: '' }, depth2: 0, ...c }));
+    const tabs = [['general', '表示'], ...(db ? [['db', 'DB・パス'], ['warn', '現在の構成の警告'], ['rules', '5Sルール']] : [])];
+    if (!tabs.some(x => x[0] === this.tab)) this.tab = 'general';
+    const builtin = (label, input, sel, hint) => `<span>${label}</span><span>${input || ''}</span><span>${sel || ''}</span><span class="hint">${hint || ''}</span>`;
     const md = modal(`<h2>⚙ オプション</h2>
-      <div class="optsec"><h3>表示</h3>テーマ: <span class="seg" id="op-theme">${[['auto', '🌓 自動'], ['light', '☀ ライト'], ['dark', '🌙 ダーク']].map(([k, l]) => `<button data-t="${k}" class="${t === k ? 'on' : ''}">${l}</button>`).join('')}</span>
-        <span class="hint">「自動」はWindowsの設定に従います</span></div>
-      ${db ? `<div class="optsec"><h3>開いているDB</h3><table class="t">
+      <div class="tabs" id="op-tabs">${tabs.map(([k, l]) => `<button data-tab="${k}" class="${this.tab === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <div class="tabpane" data-pane="general">
+        <div class="optsec"><h3>テーマ</h3><span class="seg" id="op-theme">${[['auto', '🌓 自動'], ['light', '☀ ライト'], ['dark', '🌙 ダーク']].map(([k, l]) => `<button data-t="${k}" class="${t === k ? 'on' : ''}">${l}</button>`).join('')}</span>
+          <span class="hint">「自動」はWindowsの設定に従います</span></div>
+        ${db ? '' : '<p class="hint">DBを開くと、DBの情報と判定ルールを設定できます。</p>'}
+      </div>
+      ${db ? `<div class="tabpane" data-pane="db">
+        <div class="optsec"><h3>開いているDB</h3><table class="t">
         <tr><td>ファイル</td><td class="wrap">${esc(db.path)}</td></tr>
         <tr><td>作業者コード</td><td>${S.code ? esc(S.code) : '<span class="muted">なし(マスター)</span>'}</td></tr>
         <tr><td>対象ルート</td><td class="wrap">${esc(m.root)}</td></tr>
@@ -1015,7 +1141,7 @@ const Options = {
         <tr><td>項目数</td><td>${fmtNum(+m.node_count)}</td></tr>
         <tr><td>マスターID / 版</td><td class="muted">${esc((m.master_id || '-').slice(0, 8))} / ${esc((m.master_rev || '-').slice(0, 8))}</td></tr>
         ${m.master_path ? `<tr><td>元のマスター</td><td class="wrap">${esc(m.master_path)}</td></tr>` : ''}</table></div>
-      ${m.virtual === 'true' ? '' : `<div class="optsec"><h3>パス(SharePoint / OneDrive 同期フォルダ向け)</h3>
+        ${m.virtual === 'true' ? '' : `<div class="optsec"><h3>パス(SharePoint / OneDrive 同期フォルダ向け)</h3>
         <p class="hint">「記録用のパス」を設定すると、DB内のパスをその形(SharePoint の URL など)で記録します。個人のローカルパスが入らないので、全員が同じパスで作業・統合できます。<br>
         ファイルを開く・実行スクリプトでは、下の「このPCでの実際の場所」に読み替えます。</p>
         <div class="form" style="grid-template-columns:200px 1fr auto">
@@ -1023,34 +1149,68 @@ const Options = {
           <span>このPCでの実際の場所</span><input type="text" id="op-local" value="${esc(db.localRoot || '')}" placeholder="${esc(m.local_root || '')}" ${m.alias_root ? '' : 'disabled'}><span style="display:flex;gap:4px"><button id="op-local-ref" ${m.alias_root ? '' : 'disabled'}>参照…</button><button id="op-local-set" ${m.alias_root ? '' : 'disabled'}>保存</button></span>
           <span></span><span class="hint" style="grid-column:span 2">スキャンした場所: ${esc(m.local_root || m.root)}(空欄の場合はこの場所を使います。PCごとの設定で、DBには保存しません)</span>
         </div></div>`}
-      <div class="optsec"><h3>判定の閾値(現在のフォルダ構成の警告)</h3><div class="form" style="grid-template-columns:240px 110px">
+      </div>
+      <div class="tabpane" data-pane="warn">
+        <p class="hint">現在のフォルダ構成の各行に表示する「警告・整理のヒント」とサマリーの5Sチェックの判定基準です。</p>
+        <div class="form" style="grid-template-columns:260px 110px">
         <span>古いファイル(更新から○年以上)</span><input type="number" id="st-old" value="${st.oldYears}" min="1">
         <span>パス文字数の警告(○文字超)</span><input type="number" id="st-path" value="${st.pathLimit}" min="1">
         <span>深い階層(○階層以上で警告)</span><input type="number" id="st-deep" value="${st.deepDepth}" min="1">
-        <span>項目過多(直下○項目超)</span><input type="number" id="st-many" value="${st.manyFiles}" min="1"></div></div>
-      <div class="optsec"><h3>整理後の構成ルール(5S)</h3>
-        <p class="hint">整理後のフォルダ構成(仮想)へ移動・フォルダ作成するときのルールです。「禁止」にすると、ルールに合わない操作はできません。</p>
-        <div class="form" style="grid-template-columns:240px 240px 110px">
-        <span>整理後のルートの表示名</span><input type="text" id="ru-root" value="${esc(ru.rootName)}"><span></span>
-        <span>整理後のルートの実際の場所</span><input type="text" id="ru-base" value="${esc(ru.basePath)}" placeholder="例: \\\\srv\\share\\整理後"><span class="hint">パス長・実行スクリプト用</span>
-        <span>最大階層(ルート=0)</span><input type="number" id="ru-depth" value="${ru.maxDepth}" min="1">${mode('ru-depthm', ru.depthMode)}
-        <span>整理後のフルパス文字数の上限</span><input type="number" id="ru-path" value="${ru.pathLimit}" min="10">${mode('ru-pathm', ru.pathMode)}
-        <span>1フォルダ直下の項目数の上限</span><input type="number" id="ru-items" value="${ru.maxItems}" min="1">${mode('ru-itemsm', ru.itemsMode)}
-        <span>禁止文字・末尾の.や空白・予約語</span><span class="hint">名前変更で直せます</span>${mode('ru-bad', ru.badName)}
-        <span>コピー・版管理的な名前(「- コピー」「旧」「v2」等)</span><span></span>${mode('ru-copy', ru.copyName)}
-        <span>タグが無い項目の移動</span><span class="hint">目的・種類の明確化</span>${mode('ru-tag', ru.tagRequired)}
-        </div></div>` : '<p class="hint">DBを開くと、DBの情報と判定ルールを設定できます。</p>'}`,
+        <span>項目過多(直下○項目超)</span><input type="number" id="st-many" value="${st.manyFiles}" min="1"></div>
+      </div>
+      <div class="tabpane" data-pane="rules">
+        <p class="hint">整理後のフォルダ構成(仮想)へ移動・フォルダ作成するときのルールです。「禁止」はルールに合わない操作をできなくし、「警告のみ」は操作はできますが知らせます。<br>
+        階層は「整理後のルート」を0、その直下を第1階層と数えます。</p>
+        <div class="form" style="grid-template-columns:200px 280px 1fr;margin-bottom:8px">
+          <span>整理後のルートの表示名</span><input type="text" id="ru-root" value="${esc(ru.rootName)}"><span></span>
+          <span>整理後のルートの実際の場所</span><input type="text" id="ru-base" value="${esc(ru.basePath)}" placeholder="例: \\\\srv\\share\\整理後"><span class="hint">パス長・実行スクリプト用</span>
+        </div>
+        <div class="tabs sub" id="ru-tabs"></div>
+        ${CATS.map(([c, d]) => `<div class="subpane" data-sub="${c}"><div class="catdesc"><b>${c}</b>: ${esc(d)}</div>
+          ${c === '整頓' ? `<h3>構成の上限</h3><div class="builtin">
+            ${builtin('最大階層(ルート=0)', `<input type="number" id="ru-depth" value="${ru.maxDepth}" min="1">`, modeSel('', ru.depthMode).replace('<select class=""', '<select id="ru-depthm"'), '整理方針: 10階層以下')}
+            ${builtin('整理後のフルパス文字数の上限', `<input type="number" id="ru-path" value="${ru.pathLimit}" min="10">`, modeSel('', ru.pathMode).replace('<select class=""', '<select id="ru-pathm"'), '整理後のルートの実際の場所を含む')}
+            ${builtin('1フォルダ直下の項目数の上限', `<input type="number" id="ru-items" value="${ru.maxItems}" min="1">`, modeSel('', ru.itemsMode).replace('<select class=""', '<select id="ru-itemsm"'), '1階層あたりのフォルダ数を絞る')}
+          </div>` : ''}
+          ${c === '清潔' ? `<h3>名前の基本ルール</h3><div class="builtin">${builtin('禁止文字・末尾の.や空白・予約語', '', modeSel('', ru.badName).replace('<select class=""', '<select id="ru-bad"'), 'SharePoint で使えない名前。名前変更で直せます')}</div>` : ''}
+          ${c === '清掃' ? `<h3>名前の基本ルール</h3><div class="builtin">${builtin('コピー・版管理的な名前', '', modeSel('', ru.copyName).replace('<select class=""', '<select id="ru-copy"'), '「- コピー」「(1)」「旧」「v2」など。版はSharePointのバージョン履歴で管理')}</div>` : ''}
+          ${c === '躾' ? `<h3>基本ルール</h3><div class="builtin">${builtin('タグが無い項目の移動', '', modeSel('', ru.tagRequired).replace('<select class=""', '<select id="ru-tag"'), '目的・種類を明確にする')}</div>` : ''}
+          <h3>カスタムルール</h3><div class="rules" data-cat="${c}"></div>
+          <div class="btns"><button data-addrule="${c}">＋ ルールを追加</button><button data-preset="${c}" title="ファイル整理方針に沿った初期ルールのうち、まだ無いものを追加">整理方針の初期ルールを追加</button></div>
+        </div>`).join('')}
+        <div class="subpane" data-sub="適用範囲">
+          <div class="catdesc"><b>現在のフォルダ構成への当てはめ</b>: 整理前の構成にも同じルールを当てはめ、合わない項目を色分け(行の左に赤線・「⛔5S外れ」)して、「⛔ 5Sルール外れのみ」で絞り込めるようにします。整理後の構成を考える前の棚卸しや、整理後の定期チェック(5S外れの検知)に使えます。</div>
+          <label class="inl"><input type="checkbox" id="ru-apply" ${ru.applyCurrent ? 'checked' : ''}> 現在のフォルダ構成にもルールを当てはめる</label>
+          <div class="form" style="grid-template-columns:320px 80px 1fr;margin-top:6px">
+            <span>現在のルート(スキャンしたフォルダ)の階層</span><input type="number" id="ru-offset" value="${ru.currentOffset || 0}" min="0" max="20">
+            <span class="hint">整理後の構成の第何階層に当たるか。例: 整理後のルート=「整備本部」、スキャンしたフォルダ=「125_整備業務部」なら 1</span>
+          </div>
+          <p class="hint">当てはめるルール: 最大階層・直下の項目数・禁止文字・コピー/版管理的な名前・カスタムルール(禁止/警告のどちらも)。<br>保存時に全項目を判定し直します(大規模なDBでは数秒かかります)。</p>
+        </div>
+      </div>` : ''}`,
       db ? async mm => {
         S.settings = await api('/api/settings', { oldYears: +$('#st-old', mm).value, pathLimit: +$('#st-path', mm).value, deepDepth: +$('#st-deep', mm).value, manyFiles: +$('#st-many', mm).value });
+        toast('保存しています…');
         S.rules = await api('/api/rules', {
           rootName: $('#ru-root', mm).value, basePath: $('#ru-base', mm).value, maxDepth: +$('#ru-depth', mm).value, depthMode: $('#ru-depthm', mm).value,
           pathLimit: +$('#ru-path', mm).value, pathMode: $('#ru-pathm', mm).value, maxItems: +$('#ru-items', mm).value, itemsMode: $('#ru-itemsm', mm).value,
           badName: $('#ru-bad', mm).value, copyName: $('#ru-copy', mm).value, tagRequired: $('#ru-tag', mm).value,
+          custom: this.custom.map(c => ({ ...c, depth: +c.depth || 0, depth2: +c.depth2 || 0 })),
+          applyCurrent: $('#ru-apply', mm).checked, currentOffset: +$('#ru-offset', mm).value || 0,
         });
         await refreshState();
         toast('保存しました');
         S.planv++; show(S.view);
       } : null, '保存', '閉じる');
+    md.querySelector('.box').classList.add('wide');
+    const showTab = k => {
+      this.tab = k;
+      $$('#op-tabs [data-tab]', md).forEach(b => b.classList.toggle('on', b.dataset.tab === k));
+      $$('.tabpane', md).forEach(p => p.hidden = p.dataset.pane !== k);
+    };
+    $$('#op-tabs [data-tab]', md).forEach(b => b.onclick = () => showTab(b.dataset.tab));
+    showTab(this.tab);
+    if (db) this.initRules(md);
     if ($('#op-alias-set', md)) {
       $('#op-alias-set', md).onclick = guard(async () => {
         const v = $('#op-alias', md).value.trim();
@@ -1064,6 +1224,76 @@ const Options = {
     $$('#op-theme [data-t]', md).forEach(b => b.onclick = () => {
       store.set('fm-theme', b.dataset.t); Theme.apply();
       $$('#op-theme [data-t]', md).forEach(x => x.classList.toggle('on', x === b));
+    });
+  },
+  // ---- 5Sルール(種別ごとのタブ + カスタムルールの編集) ----
+  initRules(md) {
+    const subs = [...CATS.map(c => c[0]), '適用範囲'];
+    const renderTabs = () => {
+      $('#ru-tabs', md).innerHTML = subs.map(c => {
+        const n = this.custom.filter(r => r.cat === c && r.mode !== 'off').length;
+        return `<button data-sub="${c}" class="${this.sub === c ? 'on' : ''}">${c === '適用範囲' ? '🔎 現在の構成への適用' : c}${c !== '適用範囲' && n ? `<span class="cnt">${n}</span>` : ''}</button>`;
+      }).join('');
+      $$('#ru-tabs [data-sub]', md).forEach(b => b.onclick = () => { this.sub = b.dataset.sub; renderTabs(); });
+      $$('.subpane', md).forEach(p => p.hidden = p.dataset.sub !== this.sub);
+    };
+    this.renderTabs = renderTabs;
+    if (!subs.includes(this.sub)) this.sub = '整頓';
+    renderTabs();
+    $$('[data-addrule]', md).forEach(b => b.onclick = () => {
+      this.custom.push({ id: '', cat: b.dataset.addrule, label: '', mode: 'warn', kind: 'dir', depthOp: '', depth: 1, depth2: 3, when: { op: '', val: '' }, must: { op: 'notcontains', val: '' } });
+      this.renderRules(md);
+    });
+    $$('[data-preset]', md).forEach(b => b.onclick = () => {
+      const add = PRESETS.filter(p => p.cat === b.dataset.preset && !this.custom.some(c => c.id === p.id));
+      if (!add.length) return toast('この種別の初期ルールはすべて追加済みです');
+      this.custom.push(...JSON.parse(JSON.stringify(add)));
+      this.renderRules(md);
+    });
+    this.renderRules(md);
+  },
+  renderRules(md) {
+    const opt = (list, v) => list.map(([k, l]) => `<option value="${k}" ${v === k ? 'selected' : ''}>${esc(l)}</option>`).join('');
+    const valInput = (cls, c) => c.op === 'format' ? `<select class="${cls}">${opt(FORMATS, c.val)}</select>`
+      : c.op === 'forbid' || !c.op ? '' : `<input type="text" class="val ${cls}" value="${esc(c.val)}" placeholder="${esc(VAL_HINT[c.op] || '')}">`;
+    for (const host of $$('.rules', md)) {
+      const cat = host.dataset.cat;
+      const idx = this.custom.map((c, i) => [c, i]).filter(([c]) => c.cat === cat);
+      host.innerHTML = idx.length ? idx.map(([c, i]) => `<div class="rule m-${c.mode}" data-i="${i}">
+        <div class="rl">${modeSel('r-mode', c.mode)}<input type="text" class="lbl r-label" value="${esc(c.label)}" placeholder="ルール名(任意。違反の表示に使います)">
+          <select class="r-cat" title="種別(タブ)">${CATS.map(([k]) => `<option ${c.cat === k ? 'selected' : ''}>${k}</option>`).join('')}</select>
+          <button class="mini" data-up title="上へ">↑</button><button class="mini danger" data-del title="削除">×</button></div>
+        <div class="rl"><b>対象</b><select class="r-kind">${opt([['dir', 'フォルダ'], ['file', 'ファイル'], ['any', 'フォルダ・ファイル']], c.kind)}</select>
+          <select class="r-dop">${opt([['', 'すべての階層'], ['eq', '第n階層'], ['le', '第n階層まで(n以下)'], ['ge', '第n階層以下(n以上・深い側)'], ['range', '第n〜m階層']], c.depthOp)}</select>
+          ${c.depthOp ? `<input type="number" class="r-d" value="${c.depth}" min="0" title="n">` : ''}${c.depthOp === 'range' ? `〜<input type="number" class="r-d2" value="${c.depth2}" min="0" title="m">` : ''}
+          <select class="r-wop" title="名前による対象の絞り込み(任意)">${opt([['', '名前は問わない'], ...COND_OPS], c.when.op)}</select>${valInput('r-wval', c.when)}</div>
+        <div class="rl"><b>要件</b><select class="r-mop">${opt(MUST_OPS, c.must.op)}</select>${valInput('r-mval', c.must)}${c.must.op && c.must.op !== 'forbid' ? '<span class="muted">こと</span>' : ''}</div>
+        <div class="rd">→ ${esc(describeRule(c))}</div></div>`).join('')
+        : '<p class="muted">この種別のカスタムルールはありません。</p>';
+    }
+    $$('.rule', md).forEach(el => {
+      const c = this.custom[+el.dataset.i];
+      const on = (sel, ev, fn) => { const x = $(sel, el); if (x) x.addEventListener(ev, () => { fn(x.value, x); }); };
+      const rerender = () => { this.renderRules(md); this.renderTabs(); };
+      const desc = () => { $('.rd', el).textContent = '→ ' + describeRule(c); el.className = `rule m-${c.mode}`; };
+      on('.r-mode', 'change', v => { c.mode = v; desc(); this.renderTabs(); });
+      on('.r-label', 'input', v => { c.label = v; });
+      on('.r-cat', 'change', v => { c.cat = v; rerender(); });
+      on('.r-kind', 'change', v => { c.kind = v; if (v === 'file' && c.must.op === 'haschild') c.must = { op: 'forbid', val: '' }; rerender(); });
+      on('.r-dop', 'change', v => { c.depthOp = v; rerender(); });
+      on('.r-d', 'input', v => { c.depth = +v; desc(); });
+      on('.r-d2', 'input', v => { c.depth2 = +v; desc(); });
+      on('.r-wop', 'change', v => { c.when = { op: v, val: v === 'format' ? 'num3' : '' }; rerender(); });
+      on('.r-wval', 'input', v => { c.when.val = v; desc(); });
+      on('.r-wval', 'change', v => { c.when.val = v; desc(); });
+      on('.r-mop', 'change', v => { c.must = { op: v, val: v === 'format' ? 'num3' : '' }; if (v === 'haschild') c.kind = 'dir'; rerender(); });
+      on('.r-mval', 'input', v => { c.must.val = v; desc(); });
+      on('.r-mval', 'change', v => { c.must.val = v; desc(); });
+      $('[data-del]', el).onclick = () => { this.custom.splice(+el.dataset.i, 1); rerender(); };
+      $('[data-up]', el).onclick = () => {
+        const i = +el.dataset.i, prev = this.custom.map((x, k) => [x, k]).filter(([x, k]) => k < i && x.cat === c.cat).pop();
+        if (prev) { [this.custom[prev[1]], this.custom[i]] = [this.custom[i], this.custom[prev[1]]]; rerender(); }
+      };
     });
   },
 };
@@ -1190,20 +1420,21 @@ async function pickRecent(onPick) {
 // ===== サマリー(5S) =====
 function progressHTML(p) {
   if (!p) return '';
-  const done = p.files - p.remFiles;
+  const done = p.files - p.remFiles - (p.holdFiles || 0);
   return `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-    <div class="tr" style="width:240px;height:12px;background:var(--track);border-radius:6px;overflow:hidden;display:flex" title="移動 ${fmtNum(p.moveFiles)} / 削除 ${fmtNum(p.delFiles)} / 未処理 ${fmtNum(p.remFiles)}">
-      <i class="seg-move" style="display:block;width:${pct(p.moveFiles, p.files)}%"></i><i class="seg-del" style="display:block;width:${pct(p.delFiles, p.files)}%"></i></div>
+    <div class="tr" style="width:240px;height:12px;background:var(--track);border-radius:6px;overflow:hidden;display:flex" title="移動 ${fmtNum(p.moveFiles)} / 削除 ${fmtNum(p.delFiles)} / 保留 ${fmtNum(p.holdFiles || 0)} / 未処理 ${fmtNum(p.remFiles)}">
+      <i class="seg-move" style="display:block;width:${pct(p.moveFiles, p.files)}%"></i><i class="seg-del" style="display:block;width:${pct(p.delFiles, p.files)}%"></i><i class="seg-hold" style="display:block;width:${pct(p.holdFiles || 0, p.files)}%"></i></div>
     <span>処理済み <b>${pct(done, p.files).toFixed(1)}%</b> (${fmtNum(done)} / ${fmtNum(p.files)} ファイル)</span>
     <span><span class="legend-dot seg-move"></span>移動 ${fmtNum(p.moveFiles)} (${fmtSize(p.moveSize)})</span>
     <span><span class="legend-dot seg-del"></span>削除 ${fmtNum(p.delFiles)} (${fmtSize(p.delSize)})</span>
+    ${p.holdFiles ? `<span><a class="legend-hold" title="保留の項目だけを表示"><span class="legend-dot seg-hold"></span>保留 ${fmtNum(p.holdFiles)} (${fmtSize(p.holdSize)})</a></span>` : ''}
     <span><span class="legend-dot" style="background:var(--track);border:1px solid var(--line)"></span>未処理 ${fmtNum(p.remFiles)} (${fmtSize(p.remSize)})</span></div>`;
 }
 Views.summary = {
   async enter() {
     const el = $('#view-summary');
     if (!this.html) el.innerHTML = '<p class="muted">集計中…(初回は大規模データで数秒かかります)</p>';
-    const sm = await api('/api/summary');
+    const [sm] = await Promise.all([api('/api/summary'), loadOwners()]);
     S.settings = sm.settings;
     const m = sm.meta, st = sm.settings;
     const groups = {};
@@ -1239,9 +1470,10 @@ Views.summary = {
           <div class="card"><h2>拡張子 上位10(容量順)</h2><table class="t">
             ${sm.topExts.map(x => `<tr class="click" data-ext="${esc(x.key)}"><td>${esc(x.label)}</td><td class="num">${fmtNum(x.count)} 件</td><td class="num">${fmtSize(x.size)}</td></tr>`).join('')}</table>
             <p><a onclick="show('exts')">すべての拡張子を見る →</a></p></div>
-          <div class="card"><h2>作業者別・タグ別</h2>
+          <div class="card"><h2>作業者別・タグ別・担当別</h2>
             ${sm.editors.length ? `<table class="t"><tr><th>作業者</th><th class="num">設定数</th></tr>${sm.editors.map(a => `<tr><td>${esc(a.key)}</td><td class="num">${fmtNum(a.count)}</td></tr>`).join('')}</table>` : '<p class="muted">まだアクションはありません。</p>'}
             ${sm.tags.length ? `<p>${sm.tags.slice(0, 30).map(t => `<a data-tag="${esc(t.key)}"><span class="tag">${esc(t.key)} ${fmtNum(t.count)}</span></a>`).join('')}</p>` : ''}
+            ${S.owners.length ? `<h3 style="margin-top:10px">担当別(担当範囲のファイル数)</h3><table class="t">${S.owners.map(o => `<tr><td><a data-owner="${esc(o.key)}" title="整理画面でこの担当の範囲だけを表示">👤 ${esc(o.key)}</a></td><td class="num">${fmtNum(o.size)} ファイル</td></tr>`).join('')}</table>` : ''}
             <p><a onclick="show('plan')">アクション一覧を開く →</a></p></div>
         </div>
       </div>`;
@@ -1252,6 +1484,8 @@ Views.summary = {
     $$('tr.click[data-deep]', el).forEach(tr => tr.onclick = () => show('list', { check: 'deep' }));
     $$('a[data-tag]', el).forEach(a => a.onclick = () => show('list', { tag: a.dataset.tag }));
     $('#sm-settings').onclick = () => Options.open();
+    const lh = $('.legend-hold', el); if (lh) lh.onclick = () => show('organize', { filter: 'hold' });
+    $$('a[data-owner]', el).forEach(a => a.onclick = () => show('organize', { owner: a.dataset.owner }));
   },
 };
 
@@ -1259,7 +1493,8 @@ Views.summary = {
 Views.organize = {
   reset() {
     if (!this.src) this.build();
-    this.model = new TreeModel({ dirs: $('#tr-dirs').checked, hide: $('#tr-hide').checked });
+    $('#tr-owner').value = ''; $('#tr-filter').value = ''; $('#tr-filtered').innerHTML = '';
+    this.model = new TreeModel(this.treeOpts());
     this.vmodel = new VTreeModel();
     this.loaded = false;
   },
@@ -1278,6 +1513,7 @@ Views.organize = {
         if (k === 'Delete') { guard(() => Plan.delete(S.sel))(); return true; }
         if (k === 'm' || k === 'M') { MoveFlow.start(S.sel); return true; }
         if (k === 'Backspace') { guard(() => Plan.clear(S.sel.filter(r => r.act)))(); return true; }
+        if (k === 'h' || k === 'H') { guard(() => Plan.hold(S.sel))(); return true; }
         return false;
       },
       onContext: (rows, e, r) => {
@@ -1292,10 +1528,11 @@ Views.organize = {
         { key: 'fc', label: 'ファイル', w: 70, cls: 'num', render: r => r.kind === 'file' ? '' : fmtNum(r.fc) },
         { key: 's', label: 'サイズ', w: 80, cls: 'num', render: r => fmtSize(r.s) },
         { key: 'tags', label: 'タグ', w: 120, render: r => tagsHTML(r.tags) },
+        { key: 'owner', label: '担当', w: 90, render: ownerHTML },
         { key: 'due', label: '期限', w: 96, render: r => dueHTML(r.due) },
-        { key: 'warn', label: '警告', w: 200, render: r => (r.sim?.length ? `<span class="b org" title="同じ階層に似た名前: ${esc(r.sim.join(', '))}">⚠ 似た名前 ${r.sim.length}</span>` : '') + (r.kind !== 'vdir' && r.node ? warnHTML(r.node) : '') },
+        { key: 'warn', label: '警告', w: 220, render: r => (r.rule?.length ? `<span class="b mig" title="${esc(r.rule.join('\n'))}">⛔ 5Sルール ${r.rule.length > 1 ? r.rule.length : ''}</span>` : '') + (r.sim?.length ? `<span class="b org" title="同じ階層に似た名前: ${esc(r.sim.join(', '))}">⚠ 似た名前 ${r.sim.length}</span>` : '') + (r.kind !== 'vdir' && r.node ? warnHTML({ ...r.node, r5s: '' }) : '') },
       ],
-      rowClass: r => (r.kind === 'vdir' ? 'vdir' : r.kind === 'dir' ? 'dir' : '') + (r.sim?.length ? ' sim' : ''),
+      rowClass: r => (r.rule?.length ? 'mig' : r.kind === 'vdir' ? 'vdir' : r.kind === 'dir' ? 'dir' : '') + (r.sim?.length ? ' sim' : ''),
       onSelect: rows => {
         if (Pick.on) { if (rows.length) guard(() => Pick.choose(rows[0]))(); return; }
         Sel.set(rows, this.vt);
@@ -1326,10 +1563,8 @@ Views.organize = {
       await this.model.expandDepth(this.model.indexOf(r.id), +$('#tr-depth').value);
       this.src.refresh();
     });
-    $('#tr-dirs').onchange = $('#tr-hide').onchange = guard(async () => {
-      this.model.o = { dirs: $('#tr-dirs').checked, hide: $('#tr-hide').checked };
-      await this.model.reloadKeep(); this.src.setSource(this.model, true);
-    });
+    $('#tr-dirs').onchange = $('#tr-hide').onchange = $('#tr-owner').onchange = $('#tr-filter').onchange = guard(() => this.applyFilter());
+    this.splitter();
     $('#tr-gauge').value = store.get('fm-gauge2', 'remain');
     $('#tr-gauge').onchange = () => { store.set('fm-gauge2', $('#tr-gauge').value); this.src.cols = this.columns(); this.src.renderHead(); this.src.refresh(); };
     DeepSetting.bind('#tr-deep');
@@ -1342,6 +1577,8 @@ Views.organize = {
     $('#tr-path').onkeydown = e => { if (e.key === 'Enter') go(); };
     $('#vt-new').onclick = guard(() => VOps.new(this.vmodel.rows[0]));
     $('#vt-warn').onclick = guard(() => this.showWarnings());
+    $('#vt-rule').onclick = guard(() => this.showRuleViolations());
+    $('#tr-rule').onclick = guard(() => this.setFilter($('#tr-filter').value === 'rule' ? '' : 'rule'));
     $('#pick-cancel').onclick = () => Pick.cancel();
   },
   // 仮想ツリーの行 i の親の仮想フォルダ(配置した実フォルダの中なら、その上の仮想フォルダ)
@@ -1400,6 +1637,46 @@ Views.organize = {
     if (name === null) return;
     await Plan.fields([r], { newName: name.trim() === r.node.n ? '' : name.trim() });
   },
+  treeOpts() { return { dirs: $('#tr-dirs').checked, hide: $('#tr-hide').checked, owner: $('#tr-owner').value, tf: $('#tr-filter').value }; },
+  ownerOptions() { const cur = $('#tr-owner').value; $('#tr-owner').innerHTML = ownerOptionsHTML(cur, 'すべての担当'); $('#tr-owner').value = cur; },
+  async setFilter(tf) { $('#tr-filter').value = tf; await this.applyFilter(); },
+  async applyFilter() {
+    this.model.o = this.treeOpts();
+    const o = this.model.o, chips = [];
+    if (o.owner) chips.push(o.owner === '-' ? '担当なし' : '👤 ' + o.owner);
+    if (o.tf) chips.push({ hold: '⏸ 保留のみ', unhandled: '未処理のみ', rule: '⛔ 5Sルール外れのみ' }[o.tf]);
+    $('#tr-filtered').innerHTML = chips.length ? `<span class="b org" title="該当する項目と、そこまでのフォルダ(薄い色)だけを表示しています">絞り込み: ${chips.map(esc).join(' + ')} <a id="tr-unfilter" title="絞り込みを解除">×</a></span>` : '';
+    if (chips.length) $('#tr-unfilter').onclick = guard(async () => { $('#tr-owner').value = ''; $('#tr-filter').value = ''; await this.applyFilter(); });
+    await this.model.reloadKeep();
+    this.src.setSource(this.model, true);
+    if (o.owner || o.tf) { // 絞り込んだら該当箇所が見えるよう、2階層まで開く
+      const r0 = this.model.rows[0];
+      if (r0 && this.model.rows.length < 400) { await this.model.expandDepth(0, 2); this.src.refresh(); }
+    }
+    this.src.setEmpty(o.owner || o.tf ? '該当する項目はありません' : '項目がありません');
+    this.src.refresh();
+  },
+  // 左右の境目をドラッグして幅を調整(幅は保存する)
+  splitter() {
+    const sp = $('#org-split'), src = $('#view-organize .pane.src'), dst = $('#view-organize .pane.dst');
+    const set = f => { src.style.flex = `${f} 1 0`; dst.style.flex = `${1 - f} 1 0`; };
+    const saved = +store.get('fm-split', 0);
+    if (saved > 0.1 && saved < 0.9) set(saved);
+    sp.addEventListener('mousedown', e => {
+      e.preventDefault();
+      const box = sp.parentElement.getBoundingClientRect();
+      sp.classList.add('drag'); document.body.classList.add('colresize');
+      let f = 0;
+      const mv = ev => { f = Math.min(0.85, Math.max(0.15, (ev.clientX - box.left) / box.width)); set(f); };
+      const up = () => {
+        removeEventListener('mousemove', mv); removeEventListener('mouseup', up);
+        sp.classList.remove('drag'); document.body.classList.remove('colresize');
+        if (f) store.set('fm-split', f.toFixed(3));
+      };
+      addEventListener('mousemove', mv); addEventListener('mouseup', up);
+    });
+    sp.ondblclick = () => { src.style.flex = dst.style.flex = ''; store.set('fm-split', ''); };
+  },
   gaugeMode() { return store.get('fm-gauge2', 'remain'); },
   columns() {
     const c = cols({ key: 'name', label: '名前(現在)', w: 400, render: r => nameCell(r, true) }, 'depth', 'size');
@@ -1409,7 +1686,7 @@ Views.organize = {
       tip: mode === 'remain' ? 'フォルダ内でアクションが未設定のファイルの割合' : mode === 'root' ? 'ルート全体のサイズに占める割合' : '1つ上のフォルダのサイズに占める割合',
       render: r => this.gauge(r, mode),
     });
-    return c.concat(cols('action', 'tags', 'due', 'mtime', 'warn'));
+    return c.concat(cols('action', 'owner', 'tags', 'due', 'mtime', 'warn'));
   },
   gauge(r, mode) {
     if (r.dir && (r.f & FL.access)) return `<span class="muted" title="${esc(r.err || 'アクセス不可')}">不明</span>`;
@@ -1421,7 +1698,7 @@ Views.organize = {
     const p = pct(r.s, base);
     return gaugeHTML(p, (r.s > 0 && p < 0.1 ? '<0.1' : p.toFixed(1)) + '%', `${fmtSize(r.s)} / ${fmtSize(base)}`);
   },
-  async loadSrc() { await this.model.load(); this.src.setSource(this.model); },
+  async loadSrc() { this.model.o = this.treeOpts(); await this.model.load(); this.src.setSource(this.model); },
   async loadV() { await this.vmodel.load(); this.vt.setSource(this.vmodel); },
   async toggle(model, grid, i) {
     const r = model.rows[i];
@@ -1432,7 +1709,7 @@ Views.organize = {
     const i = await this.model.reveal(id);
     this.src.refresh();
     if (i >= 0) this.src.focusKey(id);
-    else toast('この項目は「アクション設定済みを非表示」で隠れています', true);
+    else toast('この項目は「アクション設定済みを非表示」または絞り込みで隠れています', true);
   },
   async focusV(uuid) {
     const i = await this.vmodel.revealV(uuid);
@@ -1453,11 +1730,32 @@ Views.organize = {
     modal(`<h2>⚠ 似た名前のフォルダ(同じ階層)</h2><p class="hint">目的が同じフォルダが別名で作られていないか確認してください(表記ゆれ・一方を含む・よく似た名前を検出。年度など数字だけの違いは除外)。</p>
       <table class="t">${w.map(([a, b]) => `<tr><td>${esc(vpathLabel(a))}</td><td>⇔ ${esc(b)}</td></tr>`).join('')}</table>`, null, '', '閉じる');
   },
+  async showRuleViolations() {
+    const v = await api('/api/vrules');
+    const shown = v.slice(0, 2000);
+    modal(`<h2>⛔ 5Sルールに合わない項目(整理後のフォルダ構成)</h2>
+      <p class="hint">ルールを後から設定・変更した場合などに、すでに作った構成の違反をここで確認できます。名前の変更・移動で直してください(ルールは ⚙ オプション → 5Sルール で変更できます)。<br>
+      赤 = 禁止のルール、黄 = 警告のみのルール</p>
+      <table class="t" style="table-layout:fixed">${shown.map(x => `<tr><td class="wrap" style="width:40%">${esc(vpathLabel(x.path))}</td><td class="wrap"><span class="b ${x.block ? 'mig' : 'org'}">${x.block ? '禁止' : '警告'}</span>${esc(x.msg)}</td></tr>`).join('')}</table>
+      ${v.length > shown.length ? `<p class="hint">ほか ${fmtNum(v.length - shown.length)} 件</p>` : ''}`, null, '', '閉じる').querySelector('.box').classList.add('wide');
+  },
   async updateBar() {
-    const [p, w] = await Promise.all([api('/api/progress'), api('/api/vwarnings')]);
+    const [p, w, h] = await Promise.all([api('/api/progress'), api('/api/vwarnings'), api('/api/rulehits')]);
     $('#org-progress').innerHTML = progressHTML(p);
+    const lh = $('#org-progress .legend-hold'); if (lh) lh.onclick = guard(() => this.setFilter('hold'));
     $('#vt-warn').hidden = !w.length;
     $('#vt-warn').textContent = `⚠ 似た名前 ${w.length}組`;
+    $('#tr-rule').hidden = !h.count;
+    $('#tr-rule').textContent = `⛔ 5S外れ ${fmtNum(h.count)}件`;
+    $('#tr-rule').classList.toggle('primary', $('#tr-filter').value === 'rule');
+    $('#tr-filter option[value="rule"]').disabled = !S.rules?.applyCurrent;
+    // 整理後の構成のルール違反は大規模な構成では計算に時間がかかるため、待たずに後から表示する
+    const ver = this.barv = (this.barv || 0) + 1;
+    api('/api/vrules').then(v => {
+      if (ver !== this.barv) return;
+      $('#vt-rule').hidden = !v.length;
+      $('#vt-rule').textContent = `⛔ ルール違反 ${fmtNum(v.length)}件`;
+    }, () => { });
   },
   async afterEdit() {
     await Promise.all([this.model.reloadKeep(), this.vmodel.reloadKeep()]);
@@ -1467,7 +1765,12 @@ Views.organize = {
   },
   async planChanged() { if (this.loaded) await this.afterEdit(); },
   async enter(arg) {
-    if (!this.loaded) { await Promise.all([this.loadSrc(), this.loadV()]); this.loaded = true; await this.updateBar(); }
+    if (arg.filter !== undefined || arg.owner !== undefined) {
+      if (arg.owner !== undefined) { this.ownerOptions(); $('#tr-owner').value = arg.owner; }
+      if (arg.filter !== undefined) $('#tr-filter').value = arg.filter;
+      if (this.loaded) await this.applyFilter();
+    }
+    if (!this.loaded) { await Promise.all([this.loadSrc(), this.loadV()]); this.loaded = true; await this.updateBar(); if (this.model.o.owner || this.model.o.tf) await this.applyFilter(); }
     else { this.src.render(); this.vt.render(); }
     if (arg.reveal) await this.reveal(arg.reveal);
     this.src.host.focus();
@@ -1479,17 +1782,17 @@ function listMenu(rows, e, r) {
   if (!r) return;
   Menu.show(e.clientX, e.clientY, [
     ...(rows.length === 1 ? browseItems(r, true) : [{ label: 'ツリーへ移動(先頭の項目)', icon: '🌳', onClick: () => Nav.go('tree', r) }, { label: 'プロパティ(先頭の項目)', icon: 'ℹ', onClick: () => Props.show(r) }]),
-    '-', { label: `タグ / メモの編集…${rows.length > 1 ? `(${rows.length}件)` : ''}`, icon: '🏷', onClick: () => EditNotes.show(rows) },
+    '-', ...ownerItems(rows), { label: `タグ / メモの編集…${rows.length > 1 ? `(${rows.length}件)` : ''}`, icon: '🏷', onClick: () => EditNotes.show(rows) },
   ]);
 }
 
 // ===== 検索・リスト =====
-const STATES = [['', '処理状況: すべて'], ['unhandled', '未処理'], ['handled', '処理済み(親フォルダの設定を含む)'], ['own', '個別に設定あり'], ['delete', '削除(個別)'], ['move', '移動(個別)']];
+const STATES = [['', '処理状況: すべて'], ['unhandled', '未処理'], ['handled', '処理済み(親フォルダの設定を含む)'], ['own', '個別に設定あり'], ['delete', '削除(個別)'], ['move', '移動(個別)'], ['hold', '保留(個別)'], ['ihold', '保留(親フォルダの設定を含む)']];
 Views.list = {
   reset() {
     if (!this.grid) {
       this.grid = new Grid($('#ls-grid'), {
-        columns: cols({ key: 'name', label: '名前', w: 240, sort: true, render: r => nameCell(r, false) }, 'depth', 'kind', 'ext', 'mtime', 'size', 'action', 'tags', 'due', 'warn', 'path'),
+        columns: cols({ key: 'name', label: '名前', w: 240, sort: true, render: r => nameCell(r, false) }, 'depth', 'kind', 'ext', 'mtime', 'size', 'action', 'owner', 'tags', 'due', 'warn', 'path'),
         rowClass,
         onSelect: rows => Sel.set(rows, this.grid),
         onOpen: guard(r => r.dir ? Nav.go('tree', r) : openFile(r)),
@@ -1510,11 +1813,13 @@ Views.list = {
     this.setForm({});
     this.ran = false;
   },
+  ownerOptions() { const cur = $('#ls-owner').value; $('#ls-owner').innerHTML = ownerOptionsHTML(cur, '担当: 指定なし'); $('#ls-owner').value = cur; },
   tagOptions() { const cur = $('#ls-tag').value; $('#ls-tag').innerHTML = '<option value="">タグ: 指定なし</option>' + S.tags.map(t => `<option>${esc(t)}</option>`).join(''); $('#ls-tag').value = cur; },
   setForm(a) {
     $('#ls-q').value = a.q || ''; $('#ls-kind').value = a.kind || ''; $('#ls-ext').value = a.ext || '';
     $('#ls-check').value = a.check || ''; $('#ls-state').value = a.state || '';
     this.tagOptions(); $('#ls-tag').value = a.tag || '';
+    this.ownerOptions(); $('#ls-owner').value = a.owner || '';
     $('#ls-min').value = ''; $('#ls-before').value = '';
     this.scope = a.under ? { k: 'under', v: a.under, label: '配下: ' + a.underPath.split(/[\\/]/).pop(), title: a.underPath }
       : a.vparent ? { k: 'vparent', v: a.vparent, label: '移動先: ' + a.vparentPath, title: a.vparentPath } : null;
@@ -1529,7 +1834,7 @@ Views.list = {
     }
   },
   params() {
-    const p = { q: $('#ls-q').value, kind: $('#ls-kind').value, ext: $('#ls-ext').value, check: $('#ls-check').value, state: $('#ls-state').value, tag: $('#ls-tag').value };
+    const p = { q: $('#ls-q').value, kind: $('#ls-kind').value, ext: $('#ls-ext').value, check: $('#ls-check').value, state: $('#ls-state').value, tag: $('#ls-tag').value, owner: $('#ls-owner').value };
     const mb = +$('#ls-min').value; if (mb > 0) p.minSize = Math.round(mb * 1048576);
     const d = $('#ls-before').value; if (d) p.before = Math.floor(new Date(d + 'T00:00:00').getTime() / 1000);
     if (this.scope) p[this.scope.k] = this.scope.v;
@@ -1553,21 +1858,22 @@ Views.list = {
     const n = $('#ls-count').textContent;
     modal(`<h2>検索結果すべてに一括操作</h2><p class="hint">現在の検索結果(${esc(n)})のすべての項目に適用します。</p>
       <div class="form" style="grid-template-columns:150px 300px">
-        <span>操作</span><select id="bk-op"><option value="delete">削除を設定</option><option value="move">移動を設定(移動先を選択)</option><option value="clear">アクションを解除</option><option value="tag">タグを追加</option></select>
-        <span>タグ</span><input type="text" id="bk-tag" list="taglist" placeholder="タグを追加する場合"></div>`,
+        <span>操作</span><select id="bk-op"><option value="delete">削除を設定</option><option value="move">移動を設定(移動先を選択)</option><option value="hold">保留を設定</option><option value="clear">アクションを解除</option><option value="tag">タグを追加</option><option value="owner">担当を設定</option></select>
+        <span>タグ / 担当</span><input type="text" id="bk-tag" list="taglist" placeholder="タグ・担当を設定する場合"></div>`,
       async m => {
         const op = $('#bk-op', m).value, tag = $('#bk-tag', m).value.trim();
-        if (op === 'tag' && !tag) { toast('タグを入力してください', true); return false; }
+        if ((op === 'tag' || op === 'owner') && !tag) { toast(op === 'tag' ? 'タグを入力してください' : '担当を入力してください', true); return false; }
         let target = '';
         if (op === 'move') { m.close(); target = await VPicker.pick('検索結果すべての移動先を選択'); if (!target) return; }
         const r = await api('/api/plan/filter', { query: new URLSearchParams(p).toString(), op, target, tag });
         if (op === 'move') showReport(r, '移動'); else toast(`${fmtNum(r.applied)}件に適用しました`);
-        if (tag) { S.tags.includes(tag) || S.tags.push(tag); updateTagList(); }
+        if (op === 'tag') { S.tags.includes(tag) || S.tags.push(tag); updateTagList(); }
+        if (op === 'owner') await loadOwners();
         await afterEdit();
       }, '実行');
   },
   async afterEdit() { if (this.ran) await this.search(true); },
-  async planChanged() { this.tagOptions(); if (this.ran) await this.search(true); },
+  async planChanged() { this.tagOptions(); this.ownerOptions(); if (this.ran) await this.search(true); },
   async enter(arg) {
     if (Object.keys(arg).length) { this.setForm(arg); return this.search(); }
     this.tagOptions();
@@ -1671,7 +1977,7 @@ Views.plan = {
   reset() {
     if (!this.grid) {
       this.grid = new Grid($('#pl-grid'), {
-        columns: cols('action', { key: 'name', label: '名前', w: 220, sort: true, render: r => nameCell(r, false) }, 'tags', 'due', 'memo', 'editor', 'size', 'mtime', 'path'),
+        columns: cols('action', { key: 'name', label: '名前', w: 220, sort: true, render: r => nameCell(r, false) }, 'owner', 'tags', 'due', 'memo', 'editor', 'size', 'mtime', 'path'),
         rowClass,
         onSelect: rows => Sel.set(rows, this.grid),
         onOpen: guard(r => r.dir ? Nav.go('tree', r) : openFile(r)),
@@ -1679,7 +1985,7 @@ Views.plan = {
         onContext: listMenu,
       });
       this.grid.setEmpty('アクションはまだありません');
-      $('#pl-state').onchange = $('#pl-editor').onchange = $('#pl-tag').onchange = guard(() => this.load());
+      $('#pl-state').onchange = $('#pl-editor').onchange = $('#pl-tag').onchange = $('#pl-owner').onchange = guard(() => this.load());
       $('#pl-csv').onclick = () => download('/api/export/list.csv', this.params());
       $('#pl-ps1').onclick = () => modal(`<h2>PowerShell実行スクリプトの出力</h2><p class="hint">整理後のフォルダ構成を作成し、「削除」「移動(名前変更を含む)」を実行するスクリプト(.ps1)を出力します。<br>
         ・<b>既定はドライラン</b>です。そのまま実行しても何も変更せず、実行予定をログCSVに書き出します。<br>
@@ -1693,6 +1999,7 @@ Views.plan = {
     const p = { state: $('#pl-state').value || 'own' };
     const e = $('#pl-editor').value; if (e) p.editor = e;
     const t = $('#pl-tag').value; if (t) p.tag = t;
+    const o = $('#pl-owner').value; if (o) p.owner = o;
     const s = this.grid.o.sort; if (s) { p.sort = s.key; if (s.desc) p.desc = 1; }
     return p;
   },
@@ -1702,6 +2009,7 @@ Views.plan = {
     await src.init();
     this.grid.setSource(src, keep === true);
   },
+  ownerOptions() { const cur = $('#pl-owner').value; $('#pl-owner').innerHTML = ownerOptionsHTML(cur, '担当: すべて'); $('#pl-owner').value = cur; },
   async afterEdit() { await this.load(true); await this.top(); },
   async top() {
     const sm = await api('/api/summary');
@@ -1711,6 +2019,8 @@ Views.plan = {
     $('#pl-tag').innerHTML = '<option value="">タグ: すべて</option>' + sm.tags.map(o => `<option value="${esc(o.key)}">${esc(o.key)}</option>`).join('');
     $('#pl-tag').value = curT;
     $('#plan-top').innerHTML = `<div class="card"><h2>整理の進み具合</h2>${progressHTML(sm.progress)}</div>`;
+    const lh = $('#plan-top .legend-hold'); if (lh) lh.onclick = () => { $('#pl-state').value = 'hold'; guard(() => this.load())(); };
+    this.ownerOptions();
   },
   async enter() { await this.top(); await this.load(); },
 };

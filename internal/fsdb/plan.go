@@ -14,6 +14,7 @@ import (
 const (
 	ActDelete = "delete" // 削除
 	ActMove   = "move"   // 仮想フォルダへ移動(+名前変更・期限)
+	ActHold   = "hold"   // 保留(判断を後回しにする)
 )
 
 // VRoot は仮想フォルダ構成(整理後のフォルダ構成)のルートのID。
@@ -27,18 +28,31 @@ CREATE TABLE IF NOT EXISTS vnodes(
 CREATE TABLE IF NOT EXISTS plan(
   node_id INTEGER PRIMARY KEY, action TEXT NOT NULL DEFAULT '', vparent TEXT NOT NULL DEFAULT '',
   new_name TEXT NOT NULL DEFAULT '', due TEXT NOT NULL DEFAULT '', memo TEXT NOT NULL DEFAULT '',
-  editor TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '');
+  editor TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '', owner TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS plan_vparent ON plan(vparent);
 CREATE TABLE IF NOT EXISTS tags(node_id INTEGER NOT NULL, tag TEXT NOT NULL, PRIMARY KEY(node_id, tag));
 CREATE INDEX IF NOT EXISTS tags_tag ON tags(tag);
 -- スキャン時の読み込みエラー(アクセス拒否など)
 CREATE TABLE IF NOT EXISTS node_errors(node_id INTEGER PRIMARY KEY, message TEXT NOT NULL);
 -- アクションが及ぶ範囲(互いに素な区間)。検索の「未処理/処理済み」絞り込み用
-CREATE TABLE IF NOT EXISTS plan_cover(s INTEGER PRIMARY KEY, e INTEGER NOT NULL);`
+CREATE TABLE IF NOT EXISTS plan_cover(s INTEGER PRIMARY KEY, e INTEGER NOT NULL);
+-- 5Sルールを現在のフォルダ構成に当てはめた結果(ルールを変えたときに作り直す)
+CREATE TABLE IF NOT EXISTS rule_hits(node_id INTEGER PRIMARY KEY, msg TEXT NOT NULL);`
 
 func ensurePlanSchema(db *sql.DB) error {
 	if _, err := db.Exec(planSchema); err != nil {
 		return err
+	}
+	// 担当(owner)列の追加(旧バージョンのDB・作業用コピーの控え)
+	for _, t := range []string{"plan", "plan_base"} {
+		var has, col int
+		db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name=?`, t).Scan(&has)
+		db.QueryRow(`SELECT count(*) FROM pragma_table_info(?) WHERE name='owner'`, t).Scan(&col)
+		if has > 0 && col == 0 {
+			if _, err := db.Exec(`ALTER TABLE ` + t + ` ADD COLUMN owner TEXT NOT NULL DEFAULT ''`); err != nil {
+				return err
+			}
+		}
 	}
 	// 旧バージョンの注記(notes)で「削除」とされたものを引き継ぐ
 	var n int
@@ -84,27 +98,96 @@ func (p *prefix) count(a, b int64) (int64, int64) { // 区間 [a, b] のファ�
 	return int64(p.files[b] - p.files[a-1]), p.size[b] - p.size[a-1]
 }
 
-type planIndex struct {
+// nest は入れ子の区間の集まり(ID順に add する)。
+type nest struct {
 	ids, ends []int64
 	encl      []int32 // 直近の外側の区間(なければ -1)
-	acts      []string
-	vps       []string
+	stack     []int32
+}
+
+func (ns *nest) add(id, end int64) int32 {
+	k := int32(len(ns.ids))
+	for len(ns.stack) > 0 && ns.ends[ns.stack[len(ns.stack)-1]] < id {
+		ns.stack = ns.stack[:len(ns.stack)-1]
+	}
+	enc := int32(-1)
+	if len(ns.stack) > 0 {
+		enc = ns.stack[len(ns.stack)-1]
+	}
+	ns.ids, ns.ends, ns.encl = append(ns.ids, id), append(ns.ends, end), append(ns.encl, enc)
+	ns.stack = append(ns.stack, k)
+	return k
+}
+
+// nearest は x を含む最も内側の区間(x 自身の区間を含む)。無ければ -1。
+func (ns *nest) nearest(x int64) int32 {
+	i := int32(sort.Search(len(ns.ids), func(k int) bool { return ns.ids[k] > x })) - 1
+	for i >= 0 && ns.ends[i] < x {
+		i = ns.encl[i]
+	}
+	return i
+}
+
+// segments は 1〜maxID のうち「最も内側の区間 k が match(k) を満たす」範囲を、互いに素な区間の列で返す
+// (k = -1 はどの区間にも含まれない部分)。継承される設定(アクション・担当)での絞り込みに使う。
+func (ns *nest) segments(match func(k int32) bool, maxID int64) [][2]int64 {
+	var out [][2]int64
+	emit := func(a, b int64, k int32) {
+		if a > b || !match(k) {
+			return
+		}
+		if n := len(out); n > 0 && out[n-1][1]+1 >= a {
+			out[n-1][1] = max(out[n-1][1], b)
+			return
+		}
+		out = append(out, [2]int64{a, b})
+	}
+	var stack []int32
+	top := func() int32 {
+		if len(stack) == 0 {
+			return -1
+		}
+		return stack[len(stack)-1]
+	}
+	p := int64(1)
+	pop := func() {
+		t := top()
+		emit(p, ns.ends[t], t)
+		p = max(p, ns.ends[t]+1)
+		stack = stack[:len(stack)-1]
+	}
+	for k := range ns.ids {
+		for len(stack) > 0 && ns.ends[top()] < ns.ids[k] {
+			pop()
+		}
+		emit(p, ns.ids[k]-1, top())
+		p = ns.ids[k]
+		stack = append(stack, int32(k))
+	}
+	for len(stack) > 0 {
+		pop()
+	}
+	emit(p, maxID, -1)
+	return out
+}
+
+type planIndex struct {
+	nest
+	acts []string
+	vps  []string
 	// 子区間のグループ: key = 外側の区間のインデックス(-1 = 最上位)
 	kids map[int32]*kidGroup
+}
+
+// ownerIndex は担当の区間インデックス(担当は配下に引き継がれる。配下で別の担当を設定すればそちらを優先)。
+type ownerIndex struct {
+	nest
+	owners []string
 }
 
 type kidGroup struct {
 	ids        []int64
 	files, siz []int64 // 累積(長さ len(ids)+1)
-}
-
-// nearest は x を含む最も内側の区間(x 自身の区間を含む)。無ければ -1。
-func (pi *planIndex) nearest(x int64) int32 {
-	i := int32(sort.Search(len(pi.ids), func(k int) bool { return pi.ids[k] > x })) - 1
-	for i >= 0 && pi.ends[i] < x {
-		i = pi.encl[i]
-	}
-	return i
 }
 
 func (s *Store) loadPrefix() error {
@@ -155,7 +238,6 @@ func (s *Store) ensureIndex() error {
 			return err
 		}
 		pi := &planIndex{kids: map[int32]*kidGroup{}}
-		var stack []int32
 		for rows.Next() {
 			var id, end int64
 			var act, vp string
@@ -163,17 +245,9 @@ func (s *Store) ensureIndex() error {
 				rows.Close()
 				return err
 			}
-			k := int32(len(pi.ids))
-			for len(stack) > 0 && pi.ends[stack[len(stack)-1]] < id {
-				stack = stack[:len(stack)-1]
-			}
-			enc := int32(-1)
-			if len(stack) > 0 {
-				enc = stack[len(stack)-1]
-			}
-			pi.ids, pi.ends, pi.acts, pi.vps = append(pi.ids, id), append(pi.ends, end), append(pi.acts, act), append(pi.vps, vp)
-			pi.encl = append(pi.encl, enc)
-			stack = append(stack, k)
+			k := pi.add(id, end)
+			enc := pi.encl[k]
+			pi.acts, pi.vps = append(pi.acts, act), append(pi.vps, vp)
 			g := pi.kids[enc]
 			if g == nil {
 				g = &kidGroup{files: []int64{0}, siz: []int64{0}}
@@ -187,6 +261,25 @@ func (s *Store) ensureIndex() error {
 		rows.Close()
 		s.pidx = pi
 	}
+	if s.oidx == nil {
+		rows, err := s.DB.Query(`SELECT p.node_id, n.end_id, p.owner FROM plan p JOIN nodes n ON n.id=p.node_id WHERE p.owner!='' ORDER BY p.node_id`)
+		if err != nil {
+			return err
+		}
+		oi := &ownerIndex{}
+		for rows.Next() {
+			var id, end int64
+			var o string
+			if err := rows.Scan(&id, &end, &o); err != nil {
+				rows.Close()
+				return err
+			}
+			oi.add(id, end)
+			oi.owners = append(oi.owners, o)
+		}
+		rows.Close()
+		s.oidx = oi
+	}
 	if s.vt == nil {
 		vt, err := s.loadVTree()
 		if err != nil {
@@ -199,7 +292,9 @@ func (s *Store) ensureIndex() error {
 
 func (s *Store) invalidate() {
 	s.mu.Lock()
-	s.pidx, s.vt = nil, nil
+	s.pidx, s.vt, s.oidx, s.vviol = nil, nil, nil, nil
+	s.gen++
+	s.tf = nil
 	s.mu.Unlock()
 }
 
@@ -245,6 +340,11 @@ func (s *Store) enrich(ns []Node) error {
 			if pi.vps[k] != "" {
 				x.IVPath = vt.path(pi.vps[k])
 			}
+		}
+		if k := s.oidx.nearest(x.ID); k >= 0 && s.oidx.ids[k] != x.ID {
+			x.IOwner = s.oidx.owners[k]
+		} else if k >= 0 && s.oidx.encl[k] >= 0 {
+			x.IOwner = s.oidx.owners[s.oidx.encl[k]] // 自身にも設定がある場合の、親からの担当(表示用)
 		}
 		x.Inner, x.InnerS = s.inner(x.ID, x.End, x.IsDir, x.Size)
 		if x.Action == "" && x.IAction == "" {
@@ -297,6 +397,8 @@ type PlanProgress struct {
 	DelSize   int64 `json:"delSize"`
 	MoveFiles int64 `json:"moveFiles"`
 	MoveSize  int64 `json:"moveSize"`
+	HoldFiles int64 `json:"holdFiles"`
+	HoldSize  int64 `json:"holdSize"`
 }
 
 func (s *Store) Progress() (*PlanProgress, error) {
@@ -314,10 +416,14 @@ func (s *Store) Progress() (*PlanProgress, error) {
 		if dir {
 			f, sz = s.inner(pi.ids[k], pi.ends[k], true, 0)
 		}
-		if pi.acts[k] == ActDelete {
+		switch pi.acts[k] {
+		case ActDelete:
 			pp.DelFiles += f
 			pp.DelSize += sz
-		} else {
+		case ActHold:
+			pp.HoldFiles += f
+			pp.HoldSize += sz
+		default:
 			pp.MoveFiles += f
 			pp.MoveSize += sz
 		}
@@ -371,6 +477,7 @@ func (s *Store) loadVTree() (*vtree, error) {
 		sep = `\`
 	}
 	vt := &vtree{nodes: map[string]*vnode{VRoot: {UUID: VRoot, Name: r.RootName}}, rootName: r.RootName, base: r.BasePath, sep: sep}
+	s.rulesCache = r.compiled()
 	rows, err := s.DB.Query(`SELECT uuid, parent, name, memo, editor FROM vnodes WHERE deleted=0`)
 	if err != nil {
 		return nil, err
@@ -443,7 +550,8 @@ type VRow struct {
 	Kids    int      `json:"cc"` // 直下の項目数
 	Memo    string   `json:"memo,omitempty"`
 	Editor  string   `json:"ed,omitempty"`
-	Similar []string `json:"sim,omitempty"` // 同じ階層にある似た名前
+	Similar []string `json:"sim,omitempty"`  // 同じ階層にある似た名前
+	Rule    []string `json:"rule,omitempty"` // 上位階層の命名・配置ルールの違反
 	Node    *Node    `json:"node,omitempty"`
 }
 
@@ -497,6 +605,11 @@ func (s *Store) vfolderRow(n *vnode, st map[string]*vstat) VRow {
 		Files: x.files, Size: x.size, Kids: x.direct, Memo: n.Memo, Editor: n.Editor}
 	if n.UUID == VRoot {
 		r.Path = ""
+	} else {
+		r.Rule = s.rulesCache.rowRule(true, n.Depth, n.Name, func() []string {
+			ks := siblingNames(s, n, "")
+			return append(ks, s.placedDirNames(n.UUID)...)
+		})
 	}
 	return r
 }
@@ -519,6 +632,22 @@ func (s *Store) VNode(uuid string) (*VRow, error) {
 	return &r, nil
 }
 
+// placedDirNames は仮想フォルダの直下に移動して置いた実フォルダの名前(移動後の名前)。
+func (s *Store) placedDirNames(uuid string) []string {
+	rows, err := s.DB.Query(`SELECT CASE WHEN p.new_name!='' THEN p.new_name ELSE n.name END FROM plan p JOIN nodes n ON n.id=p.node_id WHERE p.action='move' AND p.vparent=? AND n.is_dir=1`, uuid)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var x string
+		rows.Scan(&x)
+		out = append(out, x)
+	}
+	return out
+}
+
 func siblingNames(s *Store, parent *vnode, except string) []string {
 	var names []string
 	for _, k := range parent.kids {
@@ -535,6 +664,7 @@ func (s *Store) VChildren(uuid string) ([]VRow, error) {
 		return nil, err
 	}
 	s.mu.Lock()
+	rules := s.rulesCache
 	n := s.vt.nodes[uuid]
 	if n == nil {
 		s.mu.Unlock()
@@ -566,7 +696,7 @@ func (s *Store) VChildren(uuid string) ([]VRow, error) {
 			kind = "dir"
 		}
 		out = append(out, VRow{Key: fmt.Sprintf("n:%d", x.ID), Kind: kind, Name: name, Depth: n.Depth + 1,
-			Files: x.Inner, Size: x.InnerS, Kids: int(x.Children), Node: x})
+			Files: x.Inner, Size: x.InnerS, Kids: int(x.Children), Node: x, Rule: rules.rowRule(x.IsDir, n.Depth+1, name, func() []string { return s.realKidDirs(x.ID) })})
 	}
 	// 同じ階層の似た名前(フォルダ同士)。項目が多いときは、仮想フォルダが絡む組だけを調べる
 	var idx []int
@@ -596,6 +726,7 @@ func (s *Store) VChildren(uuid string) ([]VRow, error) {
 
 // VReal は仮想ツリー上に配置された実フォルダの中身(個別に別のアクションが設定された項目は除く)。
 func (s *Store) VReal(id int64, depth int) ([]VRow, error) {
+	rules := s.Rules().compiled()
 	ns, err := s.query(`SELECT `+nodeCols+nodeFrom+` WHERE n.parent_id=? AND COALESCE(p.action,'')='' ORDER BY n.id`, id)
 	if err != nil {
 		return nil, err
@@ -607,7 +738,8 @@ func (s *Store) VReal(id int64, depth int) ([]VRow, error) {
 		if x.IsDir {
 			kind = "dir"
 		}
-		out[i] = VRow{Key: fmt.Sprintf("n:%d", x.ID), Kind: kind, Name: x.Name, Depth: depth + 1, Files: x.Inner, Size: x.InnerS, Kids: int(x.Children), Node: x}
+		out[i] = VRow{Key: fmt.Sprintf("n:%d", x.ID), Kind: kind, Name: x.Name, Depth: depth + 1, Files: x.Inner, Size: x.InnerS, Kids: int(x.Children), Node: x,
+			Rule: rules.rowRule(x.IsDir, depth+1, x.Name, func() []string { return s.realKidDirs(x.ID) })}
 	}
 	return out, nil
 }
