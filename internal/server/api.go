@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -117,7 +119,7 @@ func (a *App) apiHash(r *http.Request, s *fsdb.Store) (any, error) {
 			continue
 		}
 		key := strconv.FormatInt(id, 10)
-		f, err := os.Open(n.Path)
+		f, err := os.Open(a.localPath(s, n.Path))
 		if err != nil {
 			out[key] = "ERROR: 開けません"
 			continue
@@ -147,10 +149,11 @@ func (a *App) apiOpenFile(r *http.Request, s *fsdb.Store) (any, error) {
 	if n.IsDir {
 		return nil, badRequest("フォルダは開けません")
 	}
-	if st, err := os.Stat(n.Path); err != nil || st.IsDir() {
-		return nil, badRequest("このPCからはアクセスできません(移動・削除済み、または権限がない可能性があります): %s", n.Path)
+	lp := a.localPath(s, n.Path)
+	if st, err := os.Stat(lp); err != nil || st.IsDir() {
+		return nil, badRequest("このPCからはアクセスできません(移動・削除済み、権限がない、または「このPCでの実際の場所」の設定が違う可能性があります): %s", lp)
 	}
-	if err := osutil.OpenFile(n.Path); err != nil {
+	if err := osutil.OpenFile(lp); err != nil {
 		return nil, badRequest("%v", err)
 	}
 	return map[string]any{}, nil
@@ -165,10 +168,11 @@ func (a *App) apiReveal(r *http.Request, s *fsdb.Store) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat(n.Path); err != nil {
-		return nil, badRequest("このPCからはアクセスできません: %s", n.Path)
+	lp := a.localPath(s, n.Path)
+	if _, err := os.Stat(lp); err != nil {
+		return nil, badRequest("このPCからはアクセスできません: %s", lp)
 	}
-	if err := osutil.Reveal(n.Path, n.IsDir); err != nil {
+	if err := osutil.Reveal(lp, n.IsDir); err != nil {
 		return nil, badRequest("%v", err)
 	}
 	return map[string]any{}, nil
@@ -404,7 +408,10 @@ func (a *App) apiSetCode(r *http.Request, s *fsdb.Store) (any, error) {
 }
 
 func (a *App) apiActMergeAnalyze(r *http.Request) (any, error) {
-	var q struct{ DBs []string }
+	var q struct {
+		DBs    []string
+		Master string // 統合先のマスター(空なら新しいファイルとして保存)
+	}
 	if err := decode(r, &q); err != nil {
 		return nil, err
 	}
@@ -414,7 +421,13 @@ func (a *App) apiActMergeAnalyze(r *http.Request) (any, error) {
 			dbs = append(dbs, p)
 		}
 	}
-	ma, err := fsdb.AnalyzeActionMerge(dbs)
+	master := cleanPath(q.Master)
+	if master != "" {
+		if _, err := os.Stat(master); err != nil {
+			return nil, badRequest("統合先のマスターが見つかりません: %s", master)
+		}
+	}
+	ma, err := fsdb.AnalyzeActionMerge(dbs, master)
 	if err != nil {
 		return nil, badRequest("%v", err)
 	}
@@ -423,6 +436,7 @@ func (a *App) apiActMergeAnalyze(r *http.Request) (any, error) {
 		a.analysis.Close()
 	}
 	a.analysis = ma
+	a.analysisDBs = dbs
 	a.mu.Unlock()
 	return ma, nil
 }
@@ -431,29 +445,120 @@ func (a *App) apiActMergeApply(r *http.Request) (any, error) {
 	var q struct {
 		Out     string         `json:"out"`
 		Choices map[string]int `json:"choices"`
+		Refresh bool           `json:"refresh"` // 統合後、開いている作業用コピーを新しいマスターから作り直す
 	}
 	if err := decode(r, &q); err != nil {
 		return nil, err
 	}
 	a.mu.Lock()
-	ma := a.analysis
+	ma, dbs := a.analysis, a.analysisDBs
 	a.analysis = nil
 	a.mu.Unlock()
 	if ma == nil {
 		return nil, badRequest("先に「比較する」を実行してください")
 	}
-	out, err := a.resolveDBPath(q.Out, "master_"+timeStamp())
-	if err != nil {
-		ma.Close()
-		return nil, err
+	out := ma.MasterPath
+	if out == "" {
+		var err error
+		if out, err = a.resolveDBPath(q.Out, "master_"+timeStamp()); err != nil {
+			ma.Close()
+			return nil, err
+		}
 	}
-	return a.startJob("actmerge", out, func(ctx context.Context, prog fsdb.Progress) (*ingest.Result, error) {
+	// 作り直す作業用コピー(今開いているDBが統合元の1つである場合)
+	var copyPath, code string
+	if s := a.current(); s != nil && q.Refresh {
+		for _, p := range dbs {
+			if samePath(p, s.Path) {
+				copyPath, code = s.Path, s.EditorCode()
+			}
+		}
+	}
+	a.closeStore() // 統合元・統合先のファイルを開いたままにしない(マスターの置き換えができなくなるため)
+	open := out
+	if copyPath != "" {
+		open = copyPath
+	}
+	return a.startJob("actmerge", open, func(ctx context.Context, prog fsdb.Progress) (*ingest.Result, error) {
 		defer ma.Close()
 		prog("統合中", 0, 0)
 		warns, err := ma.Apply(out, q.Choices)
 		if err != nil {
 			return nil, err
 		}
+		if copyPath != "" {
+			prog("作業用コピーを作り直し中", 0, 0)
+			m, err := fsdb.Open(out)
+			if err != nil {
+				return nil, err
+			}
+			err = m.WorkCopy(copyPath, code)
+			m.Close()
+			if err != nil {
+				return nil, fmt.Errorf("統合は完了しましたが、作業用コピーを作り直せませんでした: %v", err)
+			}
+			warns = append(warns, "作業用コピーを新しいマスターから作り直しました。このまま作業を続けられます")
+		}
 		return &ingest.Result{Warnings: warns}, nil
 	})
+}
+
+// ---- 記録用のパス(SharePoint の URL など)と、このPCでの実際の場所 ----
+
+func (a *App) pathMapFile() string { return filepath.Join(a.ProjectsDir, "pathmap.json") }
+
+func (a *App) readPathMap() map[string]string {
+	m := map[string]string{}
+	if b, err := os.ReadFile(a.pathMapFile()); err == nil {
+		json.Unmarshal(b, &m)
+	}
+	return m
+}
+
+// localPath は記録用のパスを、このPCでの実際のパスに読み替える。
+func (a *App) localPath(s *fsdb.Store, p string) string {
+	m, err := s.Meta()
+	if err != nil || m["alias_root"] == "" {
+		return p
+	}
+	return fsdb.LocalPath(p, m, a.readPathMap()[m["alias_root"]])
+}
+
+func (a *App) apiAlias(r *http.Request, s *fsdb.Store) (any, error) {
+	var q struct{ Alias string }
+	if err := decode(r, &q); err != nil {
+		return nil, err
+	}
+	if err := s.SetAlias(q.Alias); err != nil {
+		return nil, badRequest("%v", err)
+	}
+	return a.apiState(r)
+}
+
+func (a *App) apiLocalRoot(r *http.Request, s *fsdb.Store) (any, error) {
+	var q struct{ Local string }
+	if err := decode(r, &q); err != nil {
+		return nil, err
+	}
+	m, _ := s.Meta()
+	if m["alias_root"] == "" {
+		return nil, badRequest("先に「記録用のパス」を設定してください")
+	}
+	local := cleanPath(q.Local)
+	if local != "" {
+		if st, err := os.Stat(local); err != nil || !st.IsDir() {
+			return nil, badRequest("フォルダが見つかりません: %s", local)
+		}
+	}
+	pm := a.readPathMap()
+	if local == "" {
+		delete(pm, m["alias_root"])
+	} else {
+		pm[m["alias_root"]] = local
+	}
+	b, _ := json.MarshalIndent(pm, "", "  ")
+	if err := os.WriteFile(a.pathMapFile(), b, 0o644); err != nil {
+		return nil, err
+	}
+	return a.apiState(r)
 }

@@ -23,17 +23,17 @@ func TestMergeScans(t *testing.T) {
 	mk("share/B/b1.txt", "bbbbbb")
 	dir := t.TempDir()
 	dbA, dbB, dbAll, out := filepath.Join(dir, "a.db"), filepath.Join(dir, "b.db"), filepath.Join(dir, "all.db"), filepath.Join(dir, "m.db")
-	if _, err := Scan(context.Background(), filepath.Join(base, "share/A"), dbA, 2, nil); err != nil {
+	if _, err := Scan(context.Background(), filepath.Join(base, "share/A"), dbA, 2, "", nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Scan(context.Background(), filepath.Join(base, "share/B"), dbB, 2, nil); err != nil {
+	if _, err := Scan(context.Background(), filepath.Join(base, "share/B"), dbB, 2, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	// 後から A を再スキャンした想定: a1.txt のサイズが変わり、新しいファイルが増えた
 	time.Sleep(1100 * time.Millisecond)
 	mk("share/A/a1.txt", "aaaaaaaaaa")
 	mk("share/A/new.txt", "n")
-	if _, err := Scan(context.Background(), filepath.Join(base, "share"), dbAll, 2, nil); err != nil {
+	if _, err := Scan(context.Background(), filepath.Join(base, "share"), dbAll, 2, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	// 旧A のDBに注記を付けておく → 統合後に引き継がれる

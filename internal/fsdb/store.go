@@ -129,6 +129,7 @@ type Node struct {
 	PathLen  int    `json:"pl"`
 	Flags    int    `json:"f"`
 	Path     string `json:"path"`
+	Err      string `json:"err,omitempty"` // 読み込みエラー(アクセス拒否など)。フォルダならサイズ・件数は不明
 
 	// この項目自身に設定されたアクション
 	Action  string   `json:"act"`   // delete | move | ""
@@ -156,14 +157,15 @@ type Node struct {
 const nodeCols = `n.id, COALESCE(n.parent_id,0), n.end_id, n.depth, n.is_dir, n.name, n.ext, n.size, n.mtime,
  n.child_count, n.file_count, n.dir_count, n.path_len, n.flags, n.path,
  COALESCE(p.action,''), COALESCE(p.vparent,''), COALESCE(p.new_name,''), COALESCE(p.due,''), COALESCE(p.memo,''), COALESCE(p.editor,''),
- COALESCE((SELECT group_concat(g.tag, char(31)) FROM tags g WHERE g.node_id = n.id),'')`
+ COALESCE((SELECT group_concat(g.tag, char(31)) FROM tags g WHERE g.node_id = n.id),''),
+ COALESCE((SELECT message FROM node_errors e WHERE e.node_id = n.id),'')`
 const nodeFrom = ` FROM nodes n LEFT JOIN plan p ON p.node_id = n.id `
 
 func scanNode(rows *sql.Rows, x *Node) error {
 	var tags string
 	err := rows.Scan(&x.ID, &x.Parent, &x.End, &x.Depth, &x.IsDir, &x.Name, &x.Ext, &x.Size, &x.Mtime,
 		&x.Children, &x.Files, &x.Dirs, &x.PathLen, &x.Flags, &x.Path,
-		&x.Action, &x.VParent, &x.NewName, &x.Due, &x.Memo, &x.Editor, &tags)
+		&x.Action, &x.VParent, &x.NewName, &x.Due, &x.Memo, &x.Editor, &tags, &x.Err)
 	x.Tags = []string{}
 	if tags != "" {
 		x.Tags = strings.Split(tags, "\x1f")

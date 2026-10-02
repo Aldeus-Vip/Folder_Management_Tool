@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // ---- 複数人での編集 ----
@@ -77,7 +78,11 @@ func (s *Store) WorkCopy(dst, code string) error {
 		return err
 	}
 	defer c.Close()
-	return c.becomeCopy(code)
+	if err := c.becomeCopy(code); err != nil {
+		return err
+	}
+	// 統合時に「元のマスターへ統合」できるよう、マスターの場所を覚えておく
+	return c.SetMeta(map[string]string{"master_path": mustAbs(s.Path)})
 }
 
 func (s *Store) becomeCopy(code string) error {
@@ -113,28 +118,37 @@ type vnodeVal struct {
 }
 
 type mergeSrc struct {
-	Path, Code, MasterID, MasterRev string
-	plan, planBase                  map[int64]planVal
-	editor                          map[int64]string
-	vn, vnBase                      map[string]vnodeVal
-	vnEditor                        map[string]string
-	tags, tagsBase                  map[int64]map[string]bool
-	db                              *sql.DB
+	Path, Code, MasterID, MasterRev, MasterPath string
+	master                                      bool // 統合先のマスター(作業用コピーではない)
+	plan, planBase                              map[int64]planVal
+	editor                                      map[int64]string
+	vn, vnBase                                  map[string]vnodeVal
+	vnEditor                                    map[string]string
+	tags, tagsBase                              map[int64]map[string]bool
+	db                                          *sql.DB
 }
 
-func loadMergeSrc(path string) (*mergeSrc, error) {
+// loadMergeSrc は作業用コピーを読む。base を渡すとマスターとして読み、比較の基準に base の控えを使う。
+func loadMergeSrc(path string, base *mergeSrc) (*mergeSrc, error) {
 	st, err := Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
 	}
 	ms := &mergeSrc{Path: path, db: st.DB, editor: map[int64]string{}, vnEditor: map[string]string{}}
 	m, _ := st.Meta()
-	ms.Code, ms.MasterID, ms.MasterRev = m["editor_code"], m["master_id"], m["master_rev"]
+	ms.Code, ms.MasterID, ms.MasterRev, ms.MasterPath = m["editor_code"], m["master_id"], m["master_rev"], m["master_path"]
 	var nb int
 	st.DB.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name='plan_base'`).Scan(&nb)
-	if ms.Code == "" || nb == 0 {
+	if base == nil && (ms.Code == "" || nb == 0) {
 		st.Close()
 		return nil, fmt.Errorf("%s は作業用コピー(作業者コード付き)ではありません", filepath.Base(path))
+	}
+	if base != nil { // マスター: 現在の内容を、作業用コピーの base と比べる
+		if ms.Code != "" {
+			st.Close()
+			return nil, fmt.Errorf("%s はマスターではありません(作業者コード「%s」の作業用コピーです)", filepath.Base(path), ms.Code)
+		}
+		ms.master, ms.Code = true, "マスター(現在)"
 	}
 	loadPlan := func(table string, withEditor bool) (map[int64]planVal, error) {
 		rows, err := st.DB.Query(`SELECT node_id, action, vparent, new_name, due, memo, editor FROM ` + table)
@@ -193,7 +207,14 @@ func loadMergeSrc(path string) (*mergeSrc, error) {
 		}
 		return out, rows.Err()
 	}
-	if ms.plan, err = loadPlan("plan", true); err == nil {
+	if base != nil {
+		ms.planBase, ms.vnBase, ms.tagsBase = base.planBase, base.vnBase, base.tagsBase
+		if ms.plan, err = loadPlan("plan", true); err == nil {
+			if ms.vn, err = loadVn("vnodes", true); err == nil {
+				ms.tags, err = loadTags("tags")
+			}
+		}
+	} else if ms.plan, err = loadPlan("plan", true); err == nil {
 		if ms.planBase, err = loadPlan("plan_base", false); err == nil {
 			if ms.vn, err = loadVn("vnodes", true); err == nil {
 				if ms.vnBase, err = loadVn("vnodes_base", false); err == nil {
@@ -235,10 +256,11 @@ type MergeSourceInfo struct {
 }
 
 type MergeAnalysis struct {
-	Sources   []MergeSourceInfo `json:"sources"`
-	Conflicts []Conflict        `json:"conflicts"`
-	Auto      int               `json:"auto"` // 自動で統合できた変更の数
-	Warnings  []string          `json:"warnings"`
+	MasterPath string            `json:"masterPath"` // 統合先のマスター(空 = 新しいファイルとして保存)
+	Sources    []MergeSourceInfo `json:"sources"`
+	Conflicts  []Conflict        `json:"conflicts"`
+	Auto       int               `json:"auto"` // 自動で統合できた変更の数
+	Warnings   []string          `json:"warnings"`
 
 	srcs     []*mergeSrc
 	plan     map[int64]planVal
@@ -301,14 +323,20 @@ func (ms *mergeSrc) vnodeLabel(v vnodeVal) string {
 	return l
 }
 
-// AnalyzeActionMerge は作業用コピー同士の変更を比較し、自動統合できるものと競合を洗い出す。
-func AnalyzeActionMerge(paths []string) (*MergeAnalysis, error) {
-	if len(paths) < 2 {
-		return nil, fmt.Errorf("統合する作業用コピーを2つ以上指定してください")
+// AnalyzeActionMerge は作業用コピーの変更を比較し、自動統合できるものと競合を洗い出す。
+// master を指定すると、そのマスターへの統合として扱い、マスターの現在の内容も比較に加える
+// (コピー作成後に他の人の統合でマスターが更新されていても、その内容と突き合わせて統合できる)。
+func AnalyzeActionMerge(paths []string, master string) (*MergeAnalysis, error) {
+	if len(paths) < 1 {
+		return nil, fmt.Errorf("統合する作業用コピーを指定してください")
 	}
 	ma := &MergeAnalysis{conflict: map[string]*Conflict{}}
 	for _, p := range paths {
-		ms, err := loadMergeSrc(p)
+		if master != "" && strings.EqualFold(mustAbs(p), mustAbs(master)) {
+			ma.Close()
+			return nil, fmt.Errorf("統合先のマスターは作業用コピーの一覧に含めないでください")
+		}
+		ms, err := loadMergeSrc(p, nil)
 		if err != nil {
 			ma.Close()
 			return nil, err
@@ -316,8 +344,28 @@ func AnalyzeActionMerge(paths []string) (*MergeAnalysis, error) {
 		ma.srcs = append(ma.srcs, ms)
 	}
 	s0 := ma.srcs[0]
+	if master != "" {
+		ms, err := loadMergeSrc(master, s0)
+		if err != nil {
+			ma.Close()
+			return nil, err
+		}
+		if ms.MasterID != s0.MasterID {
+			ms.db.Close()
+			ma.Close()
+			return nil, fmt.Errorf("統合先(%s)は、作業用コピーの元になったマスターではありません", filepath.Base(master))
+		}
+		if ms.MasterRev != s0.MasterRev {
+			ma.Warnings = append(ma.Warnings, "マスターは作業用コピーの作成後に更新されています(他の人の統合が先に行われました)。マスターの現在の内容とも比較して統合します")
+		}
+		ma.MasterPath = mustAbs(master)
+		ma.srcs = append(ma.srcs, ms)
+	}
 	codes := map[string]bool{}
 	for _, s := range ma.srcs {
+		if s.master {
+			continue
+		}
 		if s.MasterID != s0.MasterID {
 			ma.Close()
 			return nil, fmt.Errorf("%s は別のマスターから作られたコピーです", filepath.Base(s.Path))
@@ -484,6 +532,7 @@ func AnalyzeActionMerge(paths []string) (*MergeAnalysis, error) {
 		s0.db.QueryRow(`SELECT path FROM nodes WHERE id=?`, id).Scan(&p)
 		ma.conflict[fmt.Sprintf("p:%d", id)].Title = p
 	}
+	ma.Conflicts = []Conflict{} // 競合なしでも空の一覧で返す(JSONで null にしない)
 	for _, c := range ma.conflict {
 		ma.Conflicts = append(ma.Conflicts, *c)
 	}
@@ -506,6 +555,8 @@ func growSources(out []MergeSourceInfo, srcs []*mergeSrc, i int) []MergeSourceIn
 
 // ApplyActionMerge は競合の選択(choices: 競合キー → 選択肢の番号)を反映して、
 // 作業者コードなしの新しいマスターDBを out に作る。
+// MasterPath が設定されていれば、マスターを直接更新する(元のマスターは _backup_日時.db として残す)。
+// そうでなければ out に新しいマスターを作る。
 func (ma *MergeAnalysis) Apply(out string, choices map[string]int) ([]string, error) {
 	for _, c := range ma.conflict {
 		k, ok := choices[c.Key]
@@ -555,7 +606,13 @@ func (ma *MergeAnalysis) Apply(out string, choices map[string]int) ([]string, er
 		_ = id
 	}
 
-	if abs, _ := filepath.Abs(out); func() bool {
+	final := out
+	tmpl := ma.srcs[0]
+	if ma.MasterPath != "" {
+		final = ma.MasterPath
+		out = ma.MasterPath + ".merging"
+		tmpl = ma.srcs[len(ma.srcs)-1] // マスター
+	} else if abs, _ := filepath.Abs(out); func() bool {
 		for _, s := range ma.srcs {
 			if strings.EqualFold(mustAbs(s.Path), abs) {
 				return true
@@ -566,7 +623,7 @@ func (ma *MergeAnalysis) Apply(out string, choices map[string]int) ([]string, er
 		return nil, fmt.Errorf("保存先に統合元のファイルは指定できません")
 	}
 	os.Remove(out)
-	if _, err := ma.srcs[0].db.Exec(`VACUUM INTO ?`, out); err != nil {
+	if _, err := tmpl.db.Exec(`VACUUM INTO ?`, out); err != nil {
 		return nil, err
 	}
 	st, err := Open(out)
@@ -614,9 +671,11 @@ func (ma *MergeAnalysis) Apply(out string, choices map[string]int) ([]string, er
 	}
 	var codes []string
 	for _, s := range ma.srcs {
-		codes = append(codes, s.Code)
+		if !s.master {
+			codes = append(codes, s.Code)
+		}
 	}
-	st.DB.Exec(`DELETE FROM meta WHERE key IN ('editor_code','copied_at')`)
+	st.DB.Exec(`DELETE FROM meta WHERE key IN ('editor_code','copied_at','master_path')`)
 	if err := st.SetMeta(map[string]string{"master_rev": newUUID(), "merged_from": strings.Join(codes, ", "), "merged_at": now}); err != nil {
 		return nil, err
 	}
@@ -624,7 +683,24 @@ func (ma *MergeAnalysis) Apply(out string, choices map[string]int) ([]string, er
 	if sim, err := st.SimilarWarnings(); err == nil && len(sim) > 0 {
 		warns = append(warns, fmt.Sprintf("同じ階層に似た名前の仮想フォルダが %d 組あります(整理画面で ⚠ を確認してください)", len(sim)))
 	}
-	return warns, nil
+	if final == out {
+		return warns, nil
+	}
+	// マスターを置き換える(元のマスターはバックアップとして残す)
+	st.Close()
+	ma.Close()
+	ma.srcs = nil
+	ext := filepath.Ext(final)
+	backup := strings.TrimSuffix(final, ext) + "_backup_" + time.Now().Format("20060102_150405") + ext
+	if err := os.Rename(final, backup); err != nil {
+		os.Remove(out)
+		return nil, fmt.Errorf("マスターを更新できません(誰かが開いている可能性があります): %v", err)
+	}
+	if err := os.Rename(out, final); err != nil {
+		os.Rename(backup, final)
+		return nil, fmt.Errorf("マスターを更新できません: %v", err)
+	}
+	return append(warns, "マスターを更新しました。元のマスターは "+filepath.Base(backup)+" として残しています"), nil
 }
 
 // ImportPlans は別のDBの仮想フォルダ・アクション・タグを、フルパスが一致する項目へ引き継ぐ(ツリー統合用)。

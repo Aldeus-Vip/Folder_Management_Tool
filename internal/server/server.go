@@ -34,14 +34,15 @@ type App struct {
 	Version     string
 	Shutdown    func()
 
-	token    string
-	lastBeat atomic.Int64 // 画面(ブラウザ)からの最終ハートビート(UnixNano)
-	byeAt    atomic.Int64 // タブを閉じた通知の時刻(その後ハートビートが無ければ猶予後に終了)
-	mu       sync.RWMutex
-	store    *fsdb.Store
-	job      *Job
-	analysis *fsdb.MergeAnalysis // アクション統合の比較結果(適用待ち)
-	recentMu sync.Mutex
+	token       string
+	lastBeat    atomic.Int64 // 画面(ブラウザ)からの最終ハートビート(UnixNano)
+	byeAt       atomic.Int64 // タブを閉じた通知の時刻(その後ハートビートが無ければ猶予後に終了)
+	mu          sync.RWMutex
+	store       *fsdb.Store
+	job         *Job
+	analysis    *fsdb.MergeAnalysis // アクション統合の比較結果(適用待ち)
+	analysisDBs []string
+	recentMu    sync.Mutex
 }
 
 // Job はバックグラウンドで実行中のスキャン・統合。
@@ -102,21 +103,23 @@ func (a *App) Handler() http.Handler {
 		"POST /api/actmerge/analyze": a.apiActMergeAnalyze,
 		"POST /api/actmerge/apply":   a.apiActMergeApply,
 		// 閲覧
-		"GET /api/summary":   a.withStore(a.apiSummary),
-		"GET /api/progress":  a.withStore(a.apiProgress),
-		"POST /api/settings": a.withStore(a.apiSettings),
-		"POST /api/rules":    a.withStore(a.apiRules),
-		"GET /api/node":      a.withStore(a.apiNode),
-		"GET /api/children":  a.withStore(a.apiChildren),
-		"GET /api/subtree":   a.withStore(a.apiSubtree),
-		"GET /api/find":      a.withStore(a.apiFind),
-		"GET /api/search":    a.withStore(a.apiSearch),
-		"GET /api/exts":      a.withStore(a.apiExts),
-		"GET /api/dups":      a.withStore(a.apiDups),
-		"GET /api/tags":      a.withStore(a.apiTags),
-		"POST /api/hash":     a.withStore(a.apiHash),
-		"POST /api/reveal":   a.withStore(a.apiReveal),
-		"POST /api/openfile": a.withStore(a.apiOpenFile),
+		"GET /api/summary":    a.withStore(a.apiSummary),
+		"GET /api/progress":   a.withStore(a.apiProgress),
+		"POST /api/settings":  a.withStore(a.apiSettings),
+		"POST /api/rules":     a.withStore(a.apiRules),
+		"POST /api/alias":     a.withStore(a.apiAlias),
+		"POST /api/localroot": a.withStore(a.apiLocalRoot),
+		"GET /api/node":       a.withStore(a.apiNode),
+		"GET /api/children":   a.withStore(a.apiChildren),
+		"GET /api/subtree":    a.withStore(a.apiSubtree),
+		"GET /api/find":       a.withStore(a.apiFind),
+		"GET /api/search":     a.withStore(a.apiSearch),
+		"GET /api/exts":       a.withStore(a.apiExts),
+		"GET /api/dups":       a.withStore(a.apiDups),
+		"GET /api/tags":       a.withStore(a.apiTags),
+		"POST /api/hash":      a.withStore(a.apiHash),
+		"POST /api/reveal":    a.withStore(a.apiReveal),
+		"POST /api/openfile":  a.withStore(a.apiOpenFile),
 		// 仮想フォルダ構成(整理後)
 		"GET /api/vnode":     a.withStore(a.apiVNode),
 		"GET /api/vchildren": a.withStore(a.apiVChildren),
@@ -145,7 +148,7 @@ func (a *App) Handler() http.Handler {
 		return s.WriteCSV(w, fsdb.FilterFromQuery(r.URL.Query()))
 	}))
 	mux.HandleFunc("GET /api/export/plan.ps1", a.download(func(w io.Writer, r *http.Request, s *fsdb.Store) error {
-		return s.WritePlanScript(w)
+		return s.WritePlanScript(w, func(p string) string { return a.localPath(s, p) })
 	}))
 	return a.guard(mux)
 }
@@ -288,7 +291,8 @@ func (a *App) apiState(r *http.Request) (any, error) {
 	out := map[string]any{"version": a.Version, "projectsDir": a.ProjectsDir, "checks": fsdb.CheckDefs}
 	if s != nil {
 		meta, _ := s.Meta()
-		out["db"] = map[string]any{"path": s.Path, "meta": meta, "settings": s.Settings(), "rules": s.Rules(), "code": s.EditorCode()}
+		out["db"] = map[string]any{"path": s.Path, "meta": meta, "settings": s.Settings(), "rules": s.Rules(), "code": s.EditorCode(),
+			"localRoot": a.readPathMap()[meta["alias_root"]]}
 	}
 	if job != nil {
 		out["job"] = job.snapshot()
@@ -477,6 +481,7 @@ func (a *App) apiScan(r *http.Request) (any, error) {
 		Root    string
 		DB      string
 		Workers int
+		Alias   string // 記録用のパス(SharePoint の URL など。任意)
 	}
 	if err := decode(r, &req); err != nil {
 		return nil, err
@@ -494,7 +499,7 @@ func (a *App) apiScan(r *http.Request) (any, error) {
 		return nil, err
 	}
 	return a.startJob("scan", db, func(ctx context.Context, prog fsdb.Progress) (*ingest.Result, error) {
-		return ingest.Scan(ctx, root, db, req.Workers, prog)
+		return ingest.Scan(ctx, root, db, req.Workers, req.Alias, prog)
 	})
 }
 
@@ -558,7 +563,7 @@ func (a *App) apiDBInfo(r *http.Request) (any, error) {
 			}
 		}
 		out = append(out, map[string]string{"path": p, "root": m["root"], "date": date, "source": m["source"], "code": code,
-			"masterId": m["master_id"], "masterRev": m["master_rev"]})
+			"masterId": m["master_id"], "masterRev": m["master_rev"], "masterPath": m["master_path"]})
 	}
 	return out, nil
 }

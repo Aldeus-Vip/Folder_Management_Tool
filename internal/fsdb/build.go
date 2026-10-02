@@ -21,7 +21,8 @@ type Record struct {
 	Size   int64 // ファイルのバイト数(フォルダは集計で上書き)
 	Mtime  int64 // UNIX秒(不明は0)
 	Name   string
-	Flags  int // 入力時点で分かっているフラグ(アクセス不可など)
+	Flags  int    // 入力時点で分かっているフラグ(アクセス不可など)
+	Err    string // 読み込みエラーの内容(アクセス拒否など)
 }
 
 // Builder は取込元(Excel/スキャン)に依存しない共通の構築器。
@@ -289,6 +290,14 @@ func (b *Builder) Finalize(ctx context.Context, dbPath string, prog Progress) er
 		}
 	}
 	stmt.Close()
+	// 読み込みエラー(アクセス拒否など)の内容
+	for k := 0; k < n; k++ {
+		if r := &recs[order[k]]; r.Err != "" {
+			if _, err := tx.Exec(`INSERT INTO node_errors VALUES(?,?)`, k+1, r.Err); err != nil {
+				return err
+			}
+		}
+	}
 	meta := map[string]string{
 		"sep":        b.Sep,
 		"root":       recs[0].Name,
