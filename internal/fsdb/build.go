@@ -71,16 +71,7 @@ CREATE TABLE nodes(
   flags INTEGER,
   path TEXT
 );
-CREATE TABLE notes(
-  node_id INTEGER PRIMARY KEY,
-  path TEXT,
-  action TEXT NOT NULL DEFAULT '',
-  owner TEXT NOT NULL DEFAULT '',
-  new_name TEXT NOT NULL DEFAULT '',
-  dest TEXT NOT NULL DEFAULT '',
-  memo TEXT NOT NULL DEFAULT '',
-  updated_at TEXT
-);`
+`
 
 const indexes = `
 CREATE INDEX nodes_parent ON nodes(parent_id);
@@ -236,7 +227,7 @@ func (b *Builder) Finalize(ctx context.Context, dbPath string, prog Progress) er
 			return err
 		}
 	}
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.Exec(schema + planSchema); err != nil {
 		return err
 	}
 	tx, err := db.Begin()

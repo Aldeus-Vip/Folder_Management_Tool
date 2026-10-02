@@ -19,26 +19,43 @@ window.TOKEN = "__TOKEN__";
 <body>
 <header id="top">
   <div class="brand">📁 FolderManager</div>
+  <div class="menu" id="filemenu">
+    <button class="menubtn" id="filebtn">ファイル ▾</button>
+    <div class="menupop" id="filepop" hidden>
+      <button data-cmd="open">開く… <span class="kbd">Ctrl+O</span></button>
+      <div class="menusub">最近開いたファイル</div>
+      <div id="recentlist"></div>
+      <hr>
+      <button data-cmd="workcopy">作業用コピーを作成(作業者コード付与)…</button>
+      <button data-cmd="setcode">このDBに作業者コードを設定…</button>
+      <button data-cmd="actmerge">アクションの統合(Merge)…</button>
+      <hr>
+      <button data-cmd="close">閉じる</button>
+      <button data-cmd="quit">終了</button>
+    </div>
+  </div>
   <nav id="nav">
-    <button data-view="home">ホーム</button>
+    <button data-view="import">データ取り込み</button>
     <button data-view="summary" class="needdb">サマリー(5S)</button>
-    <button data-view="tree" class="needdb">ツリー</button>
-    <button data-view="explorer" class="needdb">エクスプローラー</button>
+    <button data-view="organize" class="needdb">整理</button>
     <button data-view="list" class="needdb">検索・リスト</button>
     <button data-view="dups" class="needdb">重複候補</button>
     <button data-view="exts" class="needdb">拡張子別</button>
-    <button data-view="plan" class="needdb">アクション計画</button>
+    <button data-view="plan" class="needdb">アクション一覧</button>
   </nav>
   <span id="jobmini" hidden></span>
+  <span class="grow"></span>
+  <span id="codebadge" hidden></span>
   <div id="dbname"></div>
-  <button id="theme" title="表示テーマの切替(自動 / ライト / ダーク)"></button>
+  <button id="optbtn" title="オプション(表示・DB情報・判定ルール)">⚙ オプション</button>
+  <button id="quit" title="ツールを終了します">⏻ 終了</button>
 </header>
 
 <div id="body">
 <div id="main">
 
-<!-- ホーム -->
-<section id="view-home" class="view scrollpage">
+<!-- データ取り込み -->
+<section id="view-import" class="view scrollpage">
   <div class="card" id="home-current"></div>
   <div class="card" id="home-job" hidden>
     <h2>処理中</h2>
@@ -46,44 +63,25 @@ window.TOKEN = "__TOKEN__";
     <div class="progress" id="job-prog"><i style="width:0"></i></div>
     <button id="job-cancel">キャンセル</button>
   </div>
-  <div class="cols2">
-    <div class="card">
-      <h2>① Excelを取り込む</h2>
-      <p class="hint">FolderTreeExporter で出力した Excel(.xlsx)を読み込み、DB(.db)に変換します。<br>
-      Excelで並べ替え・保存し直したファイルも取り込めます(「フルパス」列から階層を復元します)。</p>
-      <div class="form">
-        <span>Excelファイル</span><input type="text" id="imp-xlsx" placeholder="例: D:\棚卸\FolderTree_20260901.xlsx"><button data-dialog="excel" data-target="imp-xlsx">参照…</button>
-        <span>保存するDB名</span><input type="text" id="imp-db" placeholder="空欄ならExcelと同じ名前"><span></span>
-        <span></span><button class="primary" id="imp-go">取り込み開始</button><span></span>
-      </div>
-    </div>
-    <div class="card">
-      <h2>② フォルダをスキャンする</h2>
-      <p class="hint">フォルダを直接走査してDBを作ります(Excelを経由しないので高速です)。<br>
-      ネットワークドライブは「同時読み込み数」を増やすと速くなることがあります。</p>
-      <div class="form">
-        <span>対象フォルダ</span><input type="text" id="scan-root" placeholder="例: \\fileserver\share\部署A"><button data-dialog="folder" data-target="scan-root">参照…</button>
-        <span>保存するDB名</span><input type="text" id="scan-db" placeholder="空欄なら フォルダ名_日時"><span></span>
-        <span>同時読み込み数</span><select id="scan-workers"><option>4</option><option>8</option><option selected>16</option><option>32</option><option>64</option></select><span></span>
-        <span></span><button class="primary" id="scan-go">スキャン開始</button><span></span>
-      </div>
+  <div class="card">
+    <h2>① フォルダをスキャンする</h2>
+    <p class="hint">フォルダ配下のすべてのフォルダ・ファイルを読み込み、DB(.db)を作ります。<br>
+    ネットワークドライブは「同時読み込み数」を増やすと速くなることがあります。</p>
+    <div class="form">
+      <span>対象フォルダ</span><input type="text" id="scan-root" placeholder="例: \\fileserver\share\部署A"><button data-dialog="folder" data-target="scan-root">参照…</button>
+      <span>保存するDB名</span><input type="text" id="scan-db" placeholder="空欄なら フォルダ名_日時"><span></span>
+      <span>同時読み込み数</span><select id="scan-workers"><option>4</option><option>8</option><option selected>16</option><option>32</option><option>64</option></select><span></span>
+      <span></span><button class="primary" id="scan-go">スキャン開始</button><span></span>
     </div>
   </div>
   <div class="card">
-    <h2>③ 保存済みのDBを開く</h2>
-    <div class="form" style="margin-bottom:10px">
-      <span>DBファイル</span><input type="text" id="open-path" placeholder="例: D:\棚卸\部署A.db"><button data-dialog="db" data-target="open-path">参照…</button>
-      <span></span><button id="open-go">開く</button><span></span>
-    </div>
-    <div id="projects"></div>
-  </div>
-  <div class="card">
-    <h2>④ 複数のDBを統合する(マージ)</h2>
-    <p class="hint">部署ごと・ドライブごとにスキャン/取込したDBを、<b>フルパスを基準に1つのツリーへ統合</b>した新しいDBを作ります(元のDBは変更しません)。<br>
+    <h2>② 複数のDBを統合する(ツリーのマージ)</h2>
+    <p class="hint">部署ごと・ドライブごとにスキャンしたDBを、<b>フルパスを基準に1つのツリーへ統合</b>した新しいDBを作ります(元のDBは変更しません)。<br>
     ・共通の親フォルダがあればそれがルートになります。無い場合(別サーバー・別ドライブ)は「(統合ルート)」の下に並べます。<br>
-    ・同じパスが複数のDBにあるときは、下の「優先」の設定に従って1つを採用します。アクション・担当・メモも同じ順で引き継ぎます。</p>
+    ・同じパスが複数のDBにあるときは、下の「優先」の設定に従って1つを採用します。整理後のフォルダ構成・アクション・タグも同じ順で引き継ぎます。<br>
+    ・複数人で編集したアクションをまとめる場合は「ファイル」→「アクションの統合(Merge)」を使ってください。</p>
     <div class="form" style="margin-bottom:8px">
-      <span>DBを追加</span><input type="text" id="mg-path" placeholder="DBのパス(保存済みDBは右のボタンから選択)"><span style="display:flex;gap:4px"><button id="mg-add">追加</button><button id="mg-ref">参照…</button><button id="mg-saved">保存済みから選択…</button></span>
+      <span>DBを追加</span><input type="text" id="mg-path" placeholder="DBのパス"><span style="display:flex;gap:4px"><button id="mg-add">追加</button><button id="mg-ref">参照…</button><button id="mg-recent">最近開いたファイルから…</button></span>
     </div>
     <table class="t" id="mg-list"></table>
     <div class="form" style="margin-top:10px">
@@ -92,14 +90,14 @@ window.TOKEN = "__TOKEN__";
       <span></span><button class="primary" id="mg-go">統合開始</button><span></span>
     </div>
   </div>
-  <div class="hint">終了するときは、黒いウィンドウ(コンソール)を閉じるか <a id="quit">ツールを終了</a> を押してください。</div>
+  <div class="hint">ブラウザのタブを閉じると、ツールは自動で終了します(スキャン・統合中は完了まで待ちます)。すぐに終了するには右上の「⏻ 終了」を押してください。</div>
 </section>
 
 <!-- サマリー -->
 <section id="view-summary" class="view scrollpage"></section>
 
-<!-- ツリー(Excel風) -->
-<section id="view-tree" class="view">
+<!-- 整理(現在のツリー + 整理後のフォルダ構成) -->
+<section id="view-organize" class="view">
   <div class="toolbar">
     <button id="tr-collapse" title="ルート直下だけの表示に戻す">すべて折りたたむ</button>
     <span>選択フォルダを</span>
@@ -107,53 +105,59 @@ window.TOKEN = "__TOKEN__";
     <button id="tr-expand">展開</button>
     <span class="sep"></span>
     <label><input type="checkbox" id="tr-dirs"> フォルダのみ</label>
+    <label title="削除・移動を設定した項目(とその配下)を表示しない"><input type="checkbox" id="tr-hide"> アクション設定済みを非表示</label>
     <span class="sep"></span>
-    <span>サイズゲージ</span>
-    <select id="tr-gauge" title="ゲージの長さの基準">
-      <option value="parent">親フォルダに占める割合</option>
-      <option value="root">全体(ルート)に占める割合</option>
+    <label title="ルート(選択フォルダ)を階層0として数えます">深い階層の警告 <input type="number" id="tr-deep" min="1" style="width:52px"> 階層以上</label>
+    <span class="sep"></span>
+    <span>ゲージ</span>
+    <select id="tr-gauge" title="ゲージの内容">
+      <option value="remain">未処理の割合(フォルダ内)</option>
+      <option value="parent">サイズ比(親フォルダ内)</option>
+      <option value="root">サイズ比(全体)</option>
       <option value="off">表示しない</option>
     </select>
     <span class="sep"></span>
-    <input type="text" id="tr-path" placeholder="フルパスを貼り付けて移動" style="width:280px">
+    <input type="text" id="tr-path" placeholder="フルパスを貼り付けて移動" style="width:200px">
     <button id="tr-go">移動</button>
-    <span class="grow"></span>
-    <span class="muted kbd">←→:開閉 ↑↓:移動 1〜6:アクション 0:解除</span>
   </div>
-  <div id="tr-grid" class="grid"></div>
-</section>
-
-<!-- エクスプローラー -->
-<section id="view-explorer" class="view">
-  <div class="toolbar">
-    <button id="ex-back" title="戻る">←</button>
-    <button id="ex-up" title="親フォルダへ">↑</button>
-    <div class="crumbs" id="ex-crumbs"></div>
-    <span class="grow"></span>
-    <input type="text" id="ex-q" placeholder="このフォルダ配下を検索" style="width:220px">
-  </div>
+  <div class="progbar" id="org-progress"></div>
   <div class="split">
-    <div class="left"><div id="ex-tree" class="grid"></div></div>
-    <div class="right"><div id="ex-list" class="grid"></div></div>
+    <div class="pane src">
+      <div class="panehead"><b>現在のフォルダ構成</b><span class="muted kbd">Del:削除 M:移動 Backspace:解除 / ドラッグで右の仮想フォルダへ移動</span></div>
+      <div id="tr-grid" class="grid"></div>
+    </div>
+    <div class="pane dst">
+      <div class="panehead">
+        <b>整理後のフォルダ構成(仮想)</b>
+        <span class="grow"></span>
+        <button id="vt-new" title="選択中の仮想フォルダの下に作成">＋ フォルダ</button>
+        <button id="vt-rename">名前変更</button>
+        <button id="vt-del" class="danger">削除</button>
+        <button id="vt-warn" title="同じ階層に似た名前のフォルダ" hidden></button>
+      </div>
+      <div class="panehead sub"><span id="vt-target" class="muted"></span><span class="grow"></span><button id="vt-moveto" class="primary" title="左で選択した項目を、右で選択中の仮想フォルダへ移動(キー M)">← 選択項目をここへ移動</button></div>
+      <div id="vt-grid" class="grid"></div>
+    </div>
   </div>
 </section>
 
 <!-- 検索・リスト -->
 <section id="view-list" class="view">
   <div class="toolbar">
-    <input type="text" id="ls-q" placeholder="名前(\ を含めるとパス)で検索" style="width:220px">
+    <input type="text" id="ls-q" placeholder="名前(\ を含めるとパス)で検索" style="width:200px">
     <select id="ls-kind"><option value="">すべて</option><option value="file">ファイル</option><option value="dir">フォルダ</option></select>
-    <input type="text" id="ls-ext" placeholder="拡張子" style="width:70px">
+    <input type="text" id="ls-ext" placeholder="拡張子" style="width:64px">
     <select id="ls-check"></select>
-    <select id="ls-action"></select>
-    <input type="number" id="ls-min" placeholder="サイズ≥MB" style="width:100px" min="0">
+    <select id="ls-state"></select>
+    <select id="ls-tag"></select>
+    <input type="number" id="ls-min" placeholder="サイズ≥MB" style="width:96px" min="0">
     <input type="date" id="ls-before" title="この日付より前に更新">
     <span id="ls-under" hidden></span>
     <button class="primary" id="ls-go">検索</button>
     <button id="ls-clear">条件クリア</button>
     <span class="grow"></span>
     <span id="ls-count" class="muted"></span>
-    <button id="ls-bulk" title="検索結果すべてにアクション等を設定">結果に一括設定…</button>
+    <button id="ls-bulk" title="検索結果すべてに同じ操作">結果に一括操作…</button>
     <button id="ls-csv">CSV出力</button>
   </div>
   <div id="ls-grid" class="grid"></div>
@@ -165,26 +169,29 @@ window.TOKEN = "__TOKEN__";
 <!-- 拡張子別 -->
 <section id="view-exts" class="view scrollpage"></section>
 
-<!-- アクション計画 -->
+<!-- アクション一覧 -->
 <section id="view-plan" class="view">
   <div class="scrollpage" style="flex:none; padding-bottom:0" id="plan-top"></div>
   <div class="toolbar">
-    <select id="pl-action"></select>
-    <select id="pl-owner"><option value="">担当: すべて</option></select>
+    <select id="pl-state"><option value="own">個別に設定した項目(すべて)</option><option value="delete">削除</option><option value="move">移動</option></select>
+    <select id="pl-editor"><option value="">作業者: すべて</option></select>
+    <select id="pl-tag"></select>
     <span id="pl-count" class="muted"></span>
     <span class="grow"></span>
     <button id="pl-csv">CSV出力</button>
     <button id="pl-ps1">PowerShell実行スクリプト出力</button>
-    <button id="pl-import">別DBから注記を引継ぐ…</button>
   </div>
   <div id="pl-grid" class="grid"></div>
 </section>
+
+<!-- アクションの統合(複数人の作業用コピーをまとめる) -->
+<section id="view-actmerge" class="view scrollpage"></section>
 
 </div>
 <aside id="panel" hidden></aside>
 </div>
 
-<datalist id="owners"></datalist>
+<datalist id="taglist"></datalist>
 <div id="toast"></div>
 <div id="modal" hidden></div>
 <script src="app.js"></script>

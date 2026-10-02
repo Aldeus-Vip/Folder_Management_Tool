@@ -3,6 +3,8 @@
 package osutil
 
 import (
+	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 )
@@ -17,3 +19,5 @@ func OpenBrowser(url string) error {
 }
 
 func Reveal(path string, isDir bool) error { return ErrUnsupported }
+
+func Alert(msg string, isError bool) { fmt.Fprintln(os.Stderr, msg) }

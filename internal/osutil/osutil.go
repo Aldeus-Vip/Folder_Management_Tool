@@ -10,7 +10,6 @@ var ErrUnsupported = errors.New("この環境ではダイアログを表示で�
 type DialogKind string
 
 const (
-	OpenExcel  DialogKind = "excel"
 	OpenDB     DialogKind = "db"
 	OpenDBs    DialogKind = "dbmulti" // 複数選択(改行区切りで返す)
 	SaveDB     DialogKind = "savedb"

@@ -12,7 +12,7 @@ jobs:
           go-version-file: go.mod
       - run: go vet ./...
       - run: go test ./...
-      - run: GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/FolderManager.exe ./cmd/foldermanager
+      - run: GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui" -o dist/FolderManager.exe ./cmd/foldermanager
       - uses: actions/upload-artifact@v4
         with:
           name: FolderManager-windows
