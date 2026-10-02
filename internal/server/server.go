@@ -125,6 +125,7 @@ func (a *App) Handler() http.Handler {
 		"GET /api/vchildren": a.withStore(a.apiVChildren),
 		"GET /api/vreal":     a.withStore(a.apiVReal),
 		"GET /api/vtree":     a.withStore(a.apiVTree),
+		"GET /api/vrules":    a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) { return s.TopRuleViolations() }),
 		"GET /api/vwarnings": a.withStore(a.apiVWarnings),
 		"POST /api/vcreate":  a.withEdit(a.apiVCreate),
 		"POST /api/vrename":  a.withEdit(a.apiVRename),

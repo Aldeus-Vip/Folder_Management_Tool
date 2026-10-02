@@ -15,11 +15,12 @@ type Store struct {
 	DB   *sql.DB
 	Path string
 
-	mu      sync.Mutex
-	summary *Summary   // 静的部分のキャッシュ(ノードは構築後に変わらないため)
-	pre     *prefix    // ID順のファイル数・サイズの累積(未処理件数の計算用)
-	pidx    *planIndex // アクションの区間インデックス(nil=再構築が必要)
-	vt      *vtree     // 仮想フォルダ構成のキャッシュ(nil=再構築が必要)
+	mu         sync.Mutex
+	summary    *Summary   // 静的部分のキャッシュ(ノードは構築後に変わらないため)
+	pre        *prefix    // ID順のファイル数・サイズの累積(未処理件数の計算用)
+	pidx       *planIndex // アクションの区間インデックス(nil=再構築が必要)
+	vt         *vtree     // 仮想フォルダ構成のキャッシュ(nil=再構築が必要)
+	rulesCache Rules      // 仮想ツリーを読み込んだときのルール
 }
 
 // Settings は後から変更できる判定閾値(meta テーブルに保存)。

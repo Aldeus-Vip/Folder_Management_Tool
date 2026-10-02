@@ -371,6 +371,7 @@ func (s *Store) loadVTree() (*vtree, error) {
 		sep = `\`
 	}
 	vt := &vtree{nodes: map[string]*vnode{VRoot: {UUID: VRoot, Name: r.RootName}}, rootName: r.RootName, base: r.BasePath, sep: sep}
+	s.rulesCache = r
 	rows, err := s.DB.Query(`SELECT uuid, parent, name, memo, editor FROM vnodes WHERE deleted=0`)
 	if err != nil {
 		return nil, err
@@ -443,7 +444,8 @@ type VRow struct {
 	Kids    int      `json:"cc"` // 直下の項目数
 	Memo    string   `json:"memo,omitempty"`
 	Editor  string   `json:"ed,omitempty"`
-	Similar []string `json:"sim,omitempty"` // 同じ階層にある似た名前
+	Similar []string `json:"sim,omitempty"`  // 同じ階層にある似た名前
+	Rule    []string `json:"rule,omitempty"` // 上位階層の命名・配置ルールの違反
 	Node    *Node    `json:"node,omitempty"`
 }
 
@@ -497,6 +499,8 @@ func (s *Store) vfolderRow(n *vnode, st map[string]*vstat) VRow {
 		Files: x.files, Size: x.size, Kids: x.direct, Memo: n.Memo, Editor: n.Editor}
 	if n.UUID == VRoot {
 		r.Path = ""
+	} else {
+		r.Rule = s.rulesCache.topRowRule("vdir", n.Depth, n.Name)
 	}
 	return r
 }
@@ -534,6 +538,7 @@ func (s *Store) VChildren(uuid string) ([]VRow, error) {
 	if err := s.ensureIndex(); err != nil {
 		return nil, err
 	}
+	rules := s.Rules()
 	s.mu.Lock()
 	n := s.vt.nodes[uuid]
 	if n == nil {
@@ -566,7 +571,7 @@ func (s *Store) VChildren(uuid string) ([]VRow, error) {
 			kind = "dir"
 		}
 		out = append(out, VRow{Key: fmt.Sprintf("n:%d", x.ID), Kind: kind, Name: name, Depth: n.Depth + 1,
-			Files: x.Inner, Size: x.InnerS, Kids: int(x.Children), Node: x})
+			Files: x.Inner, Size: x.InnerS, Kids: int(x.Children), Node: x, Rule: rules.topRowRule(kind, n.Depth+1, name)})
 	}
 	// 同じ階層の似た名前(フォルダ同士)。項目が多いときは、仮想フォルダが絡む組だけを調べる
 	var idx []int
@@ -596,6 +601,7 @@ func (s *Store) VChildren(uuid string) ([]VRow, error) {
 
 // VReal は仮想ツリー上に配置された実フォルダの中身(個別に別のアクションが設定された項目は除く)。
 func (s *Store) VReal(id int64, depth int) ([]VRow, error) {
+	rules := s.Rules()
 	ns, err := s.query(`SELECT `+nodeCols+nodeFrom+` WHERE n.parent_id=? AND COALESCE(p.action,'')='' ORDER BY n.id`, id)
 	if err != nil {
 		return nil, err
@@ -607,7 +613,8 @@ func (s *Store) VReal(id int64, depth int) ([]VRow, error) {
 		if x.IsDir {
 			kind = "dir"
 		}
-		out[i] = VRow{Key: fmt.Sprintf("n:%d", x.ID), Kind: kind, Name: x.Name, Depth: depth + 1, Files: x.Inner, Size: x.InnerS, Kids: int(x.Children), Node: x}
+		out[i] = VRow{Key: fmt.Sprintf("n:%d", x.ID), Kind: kind, Name: x.Name, Depth: depth + 1, Files: x.Inner, Size: x.InnerS, Kids: int(x.Children), Node: x,
+			Rule: rules.topRowRule(kind, depth+1, x.Name)}
 	}
 	return out, nil
 }

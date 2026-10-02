@@ -383,3 +383,53 @@ func TestAlias(t *testing.T) {
 		t.Fatalf("restored=%s", n.Path)
 	}
 }
+
+// 第3階層までは「数字3桁_名前」、ファイルは置けない
+func TestTopRule(t *testing.T) {
+	s, ids := testDB(t)
+	r := s.Rules()
+	r.TopDepth, r.TopFormat, r.TopNameMode, r.TopFileMode = 3, "num3", "block", "block"
+	r.MaxDepth = 8
+	if err := s.SaveRules(r); err != nil {
+		t.Fatal(err)
+	}
+	if _, is, _ := s.VCreate(VRoot, "経理", "x"); len(is.Blocks) == 0 {
+		t.Fatal("name without prefix should be blocked")
+	}
+	a, is, _ := s.VCreate(VRoot, "０１０_経理", "x") // 全角も可
+	if len(is.Blocks) > 0 {
+		t.Fatalf("fullwidth: %+v", is)
+	}
+	b, _, _ := s.VCreate(a, "020_請求", "x")
+	c, _, _ := s.VCreate(b, "030_2024年度", "x")
+	if _, is, _ := s.VCreate(c, "自由な名前", "x"); len(is.Blocks) > 0 { // 第4階層は自由
+		t.Fatalf("depth4: %+v", is)
+	}
+	// ファイルを第3階層(b の下)には置けない、第4階層(c の下)は可
+	if rep, _ := s.PlanMove([]int64{ids["readme.txt"]}, b, "x"); rep.Applied != 0 {
+		t.Fatalf("file at depth3: %+v", rep)
+	}
+	if rep, _ := s.PlanMove([]int64{ids["readme.txt"]}, c, "x"); rep.Applied != 1 {
+		t.Fatalf("file at depth4: %+v", rep)
+	}
+	// フォルダ「総務」(直下にファイルあり)を第2階層へ: 名前・中身のファイルが違反
+	rep, _ := s.PlanMove([]int64{ids["総務"]}, a, "x")
+	if rep.Applied != 0 || len(rep.Issues[0].Blocks) < 2 {
+		t.Fatalf("folder: %+v", rep)
+	}
+	// 第4階層へなら可
+	if rep, _ := s.PlanMove([]int64{ids["総務"]}, c, "x"); rep.Applied != 1 {
+		t.Fatalf("folder depth4: %+v", rep)
+	}
+	// ルールを後から厳しくした場合の違反一覧(第4階層まで → c の下のファイル・名前が違反)
+	r.TopDepth = 4
+	s.SaveRules(r)
+	vs, err := s.TopRuleViolations()
+	if err != nil || len(vs) < 2 {
+		t.Fatalf("violations: %+v %v", vs, err)
+	}
+	// 仮想フォルダの移動: c(030_2024年度)をルート直下へ → 中のファイルが第2階層になり違反
+	if is, _ := s.VMove(c, VRoot, "x"); is == nil || len(is.Blocks) == 0 {
+		t.Fatalf("vmove: %+v", is)
+	}
+}

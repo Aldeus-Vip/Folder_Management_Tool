@@ -105,6 +105,7 @@ const rowClass = r => {
   return base + (e === 'delete' ? ' del' : e === 'move' ? ' mov' : '');
 };
 const vroot = () => S.rules?.rootName || '整理後';
+const topFormatLabel = ru => ({ num3: '数字3桁_名前(例: 010_経理)', alnum3: '英数字3文字_名前(例: A01_経理)', any3: '任意の3文字_名前' })[ru.topFormat] || `指定の形式(${ru.topPattern})`;
 const vpathLabel = p => p ? vroot() + '\\' + p : vroot();
 
 function actHTML(r) {
@@ -1039,6 +1040,14 @@ const Options = {
         <span>禁止文字・末尾の.や空白・予約語</span><span class="hint">名前変更で直せます</span>${mode('ru-bad', ru.badName)}
         <span>コピー・版管理的な名前(「- コピー」「旧」「v2」等)</span><span></span>${mode('ru-copy', ru.copyName)}
         <span>タグが無い項目の移動</span><span class="hint">目的・種類の明確化</span>${mode('ru-tag', ru.tagRequired)}
+        </div>
+        <h3 style="margin-top:12px">上位階層の命名・配置ルール</h3>
+        <p class="hint">例: 「第3階層までは <b>XXX_フォルダ名</b> の形式を必須とし、ファイルは置かない」。整理後のルート直下を第1階層と数えます(0 にすると無効)。</p>
+        <div class="form" style="grid-template-columns:240px 240px 110px">
+        <span>対象: 第○階層まで</span><input type="number" id="ru-topd" value="${ru.topDepth || 0}" min="0" max="20"><span></span>
+        <span>フォルダ名の形式</span><select id="ru-topf">${[['num3', '数字3桁_名前(例: 010_経理)'], ['alnum3', '英数字3文字_名前(例: A01_経理)'], ['any3', '任意の3文字_名前'], ['custom', 'カスタム(正規表現)']].map(([k, l]) => `<option value="${k}" ${ru.topFormat === k ? 'selected' : ''}>${l}</option>`).join('')}</select>${mode('ru-topn', ru.topNameMode)}
+        <span>カスタムの形式(正規表現)</span><input type="text" id="ru-topp" value="${esc(ru.topPattern || '')}" placeholder="例: ^[0-9]{2}-[0-9]{2}_.+$"><span class="hint">全角英数字は半角とみなします</span>
+        <span>対象階層へのファイルの配置</span><span class="hint">フォルダを移動する場合は中身も確認します</span>${mode('ru-topfile', ru.topFileMode)}
         </div></div>` : '<p class="hint">DBを開くと、DBの情報と判定ルールを設定できます。</p>'}`,
       db ? async mm => {
         S.settings = await api('/api/settings', { oldYears: +$('#st-old', mm).value, pathLimit: +$('#st-path', mm).value, deepDepth: +$('#st-deep', mm).value, manyFiles: +$('#st-many', mm).value });
@@ -1046,6 +1055,8 @@ const Options = {
           rootName: $('#ru-root', mm).value, basePath: $('#ru-base', mm).value, maxDepth: +$('#ru-depth', mm).value, depthMode: $('#ru-depthm', mm).value,
           pathLimit: +$('#ru-path', mm).value, pathMode: $('#ru-pathm', mm).value, maxItems: +$('#ru-items', mm).value, itemsMode: $('#ru-itemsm', mm).value,
           badName: $('#ru-bad', mm).value, copyName: $('#ru-copy', mm).value, tagRequired: $('#ru-tag', mm).value,
+          topDepth: +$('#ru-topd', mm).value, topFormat: $('#ru-topf', mm).value, topPattern: $('#ru-topp', mm).value,
+          topNameMode: $('#ru-topn', mm).value, topFileMode: $('#ru-topfile', mm).value,
         });
         await refreshState();
         toast('保存しました');
@@ -1293,9 +1304,9 @@ Views.organize = {
         { key: 's', label: 'サイズ', w: 80, cls: 'num', render: r => fmtSize(r.s) },
         { key: 'tags', label: 'タグ', w: 120, render: r => tagsHTML(r.tags) },
         { key: 'due', label: '期限', w: 96, render: r => dueHTML(r.due) },
-        { key: 'warn', label: '警告', w: 200, render: r => (r.sim?.length ? `<span class="b org" title="同じ階層に似た名前: ${esc(r.sim.join(', '))}">⚠ 似た名前 ${r.sim.length}</span>` : '') + (r.kind !== 'vdir' && r.node ? warnHTML(r.node) : '') },
+        { key: 'warn', label: '警告', w: 220, render: r => (r.rule || []).map(m => `<span class="b mig" title="${esc(m)}">⛔ ${m.includes('ファイル') ? 'ファイル配置不可' : '命名ルール'}</span>`).join('') + (r.sim?.length ? `<span class="b org" title="同じ階層に似た名前: ${esc(r.sim.join(', '))}">⚠ 似た名前 ${r.sim.length}</span>` : '') + (r.kind !== 'vdir' && r.node ? warnHTML(r.node) : '') },
       ],
-      rowClass: r => (r.kind === 'vdir' ? 'vdir' : r.kind === 'dir' ? 'dir' : '') + (r.sim?.length ? ' sim' : ''),
+      rowClass: r => (r.rule?.length ? 'mig' : r.kind === 'vdir' ? 'vdir' : r.kind === 'dir' ? 'dir' : '') + (r.sim?.length ? ' sim' : ''),
       onSelect: rows => {
         if (Pick.on) { if (rows.length) guard(() => Pick.choose(rows[0]))(); return; }
         Sel.set(rows, this.vt);
@@ -1342,6 +1353,7 @@ Views.organize = {
     $('#tr-path').onkeydown = e => { if (e.key === 'Enter') go(); };
     $('#vt-new').onclick = guard(() => VOps.new(this.vmodel.rows[0]));
     $('#vt-warn').onclick = guard(() => this.showWarnings());
+    $('#vt-rule').onclick = guard(() => this.showRuleViolations());
     $('#pick-cancel').onclick = () => Pick.cancel();
   },
   // 仮想ツリーの行 i の親の仮想フォルダ(配置した実フォルダの中なら、その上の仮想フォルダ)
@@ -1453,11 +1465,20 @@ Views.organize = {
     modal(`<h2>⚠ 似た名前のフォルダ(同じ階層)</h2><p class="hint">目的が同じフォルダが別名で作られていないか確認してください(表記ゆれ・一方を含む・よく似た名前を検出。年度など数字だけの違いは除外)。</p>
       <table class="t">${w.map(([a, b]) => `<tr><td>${esc(vpathLabel(a))}</td><td>⇔ ${esc(b)}</td></tr>`).join('')}</table>`, null, '', '閉じる');
   },
+  async showRuleViolations() {
+    const v = await api('/api/vrules'), ru = S.rules;
+    modal(`<h2>⛔ 上位階層の命名・配置ルールに合わない項目</h2>
+      <p class="hint">ルール: 第${ru.topDepth}階層までのフォルダ名は「${esc(topFormatLabel(ru))}」の形式、ファイルは置かない(⚙ オプションで変更できます)。<br>
+      ルールを後から設定・変更した場合などに、すでに作った構成の違反をここで確認できます。名前の変更・移動で直してください。</p>
+      <table class="t">${v.map(x => `<tr><td class="wrap">${esc(vpathLabel(x.path))}</td><td class="wrap">${esc(x.msg)}</td></tr>`).join('')}</table>`, null, '', '閉じる');
+  },
   async updateBar() {
-    const [p, w] = await Promise.all([api('/api/progress'), api('/api/vwarnings')]);
+    const [p, w, v] = await Promise.all([api('/api/progress'), api('/api/vwarnings'), api('/api/vrules')]);
     $('#org-progress').innerHTML = progressHTML(p);
     $('#vt-warn').hidden = !w.length;
     $('#vt-warn').textContent = `⚠ 似た名前 ${w.length}組`;
+    $('#vt-rule').hidden = !v.length;
+    $('#vt-rule').textContent = `⛔ ルール違反 ${v.length}件`;
   },
   async afterEdit() {
     await Promise.all([this.model.reloadKeep(), this.vmodel.reloadKeep()]);
