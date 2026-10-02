@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aldeus-vip/folder_management_tool/internal/fsdb"
@@ -36,10 +37,12 @@ type App struct {
 	Version     string
 	Shutdown    func()
 
-	token string
-	mu    sync.RWMutex
-	store *fsdb.Store
-	job   *Job
+	token    string
+	lastBeat atomic.Int64 // 画面(ブラウザ)からの最終ハートビート(UnixNano)
+	byeAt    atomic.Int64 // タブを閉じた通知の時刻(その後ハートビートが無ければ猶予後に終了)
+	mu       sync.RWMutex
+	store    *fsdb.Store
+	job      *Job
 }
 
 // Job はバックグラウンドで実行中の取込/スキャン。
@@ -105,10 +108,14 @@ func (a *App) Handler() http.Handler {
 		"POST /api/hash":         a.withStore(a.apiHash),
 		"POST /api/reveal":       a.withStore(a.apiReveal),
 		"POST /api/shutdown":     a.apiShutdown,
+		"POST /api/heartbeat":    a.apiHeartbeat,
+		"POST /api/bye":          a.apiBye,
 	}
 	for pat, fn := range api {
 		mux.HandleFunc(pat, a.jsonHandler(fn))
 	}
+	// 二重起動の確認用(トークン不要・情報は返さない)
+	mux.HandleFunc("GET /ping", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "FolderManager") })
 	mux.HandleFunc("GET /api/export/list.csv", a.download(func(w io.Writer, r *http.Request, s *fsdb.Store) error {
 		return s.WriteCSV(w, fsdb.FilterFromQuery(r.URL.Query()))
 	}))
@@ -518,6 +525,49 @@ func (a *App) apiDialog(r *http.Request) (any, error) {
 		return nil, badRequest("%v", err)
 	}
 	return map[string]any{"path": p, "paths": strings.FieldsFunc(p, func(c rune) bool { return c == '\n' || c == '\r' })}, nil
+}
+
+// ---- 自動終了(コンソールを出さないため、画面が閉じられたら終了する) ----
+
+const byeGrace = 15 * time.Second // タブを閉じてから終了するまで(再読み込みなら直後のハートビートで取り消し)
+
+func (a *App) apiHeartbeat(r *http.Request) (any, error) {
+	a.lastBeat.Store(time.Now().UnixNano())
+	return map[string]any{}, nil
+}
+
+// apiBye はタブを閉じたとき(pagehide)に送られる。猶予後に終了させる。
+func (a *App) apiBye(r *http.Request) (any, error) {
+	a.byeAt.Store(time.Now().UnixNano())
+	return map[string]any{}, nil
+}
+
+// WatchIdle は画面からのハートビートが timeout 以上途絶えたら onIdle を呼ぶ。
+// 取込・スキャン・統合の実行中は終了しない。
+func (a *App) WatchIdle(timeout time.Duration, onIdle func()) {
+	a.lastBeat.Store(time.Now().UnixNano()) // 起動直後はブラウザが開くまでの猶予
+	go func() {
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			a.mu.RLock()
+			busy := a.job != nil && !a.job.Finished
+			a.mu.RUnlock()
+			if busy {
+				continue
+			}
+			last := a.lastBeat.Load()
+			idle := time.Since(time.Unix(0, last)) > timeout
+			if bye := a.byeAt.Load(); bye > last && time.Since(time.Unix(0, bye)) > byeGrace {
+				idle = true // タブが閉じられ、その後ハートビートが来ていない
+			}
+			if idle {
+				a.closeStore()
+				onIdle()
+				return
+			}
+		}
+	}()
 }
 
 func (a *App) apiShutdown(r *http.Request) (any, error) {

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+	"unsafe"
 )
 
 const createNoWindow = 0x08000000
@@ -71,4 +72,15 @@ func Reveal(path string, isDir bool) error {
 		cmd.SysProcAttr = &syscall.SysProcAttr{CmdLine: `explorer.exe /select,"` + path + `"`}
 	}
 	return cmd.Start()
+}
+
+// Alert はメッセージボックスを表示する(コンソールを出さないため、エラーはここで知らせる)。
+func Alert(msg string, isError bool) {
+	text, _ := syscall.UTF16PtrFromString(msg)
+	title, _ := syscall.UTF16PtrFromString("FolderManager")
+	flags := uintptr(0x40) // MB_ICONINFORMATION
+	if isError {
+		flags = 0x10 // MB_ICONERROR
+	}
+	syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW").Call(0, uintptr(unsafe.Pointer(text)), uintptr(unsafe.Pointer(title)), flags|0x40000) // MB_TOPMOST
 }

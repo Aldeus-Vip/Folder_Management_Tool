@@ -166,6 +166,9 @@ td.wrap { white-space: normal; word-break: break-all; }
 
 /* ---- テーマ切替・サイズゲージ・統合 ---- */
 #theme { border: none; background: none; font-size: 15px; padding: 2px 6px; }
+#quit { white-space: nowrap; }
+#ended { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 30; }
+#ended .card { max-width: 520px; }
 .gauge { display: flex; align-items: center; gap: 6px; }
 .gauge .tr { flex: 1; height: 10px; background: var(--track); border-radius: 0 4px 4px 0; overflow: hidden; }
 .gauge .tr i { display: block; height: 100%; background: var(--bar); border-radius: 0 4px 4px 0; }

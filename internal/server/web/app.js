@@ -1071,6 +1071,37 @@ const Theme = {
   },
 };
 
+// ===== 起動〜終了の管理 =====
+// コンソールを出さないため、画面が開いている間はハートビートを送り、
+// タブを閉じたら通知する(サーバーは一定時間ハートビートが無いと自動終了する)。
+const Life = {
+  timer: 0, fails: 0,
+  beat: async () => {
+    try {
+      const r = await fetch('/api/heartbeat', { method: 'POST', headers: { 'X-Token': TOKEN } });
+      if (!r.ok) throw new Error();
+      Life.fails = 0;
+    } catch (e) {
+      if (++Life.fails >= 2) Life.ended('ツールは終了しています。続けるには FolderManager.exe をもう一度起動してください。');
+    }
+  },
+  start() {
+    this.beat();
+    this.timer = setInterval(() => this.beat(), 20000);
+    addEventListener('pagehide', () => navigator.sendBeacon('/api/bye?token=' + TOKEN));
+    addEventListener('pageshow', e => { if (e.persisted) this.beat(); }); // 戻る/進むでの復帰
+  },
+  stop() { clearInterval(this.timer); },
+  ended(msg) {
+    this.stop();
+    if ($('#ended')) return;
+    const d = document.createElement('div');
+    d.id = 'ended';
+    d.innerHTML = `<div class="card"><h2>FolderManager</h2><p>${esc(msg)}</p></div>`;
+    document.body.appendChild(d);
+  },
+};
+
 // ===== 起動 =====
 function initHome() {
   $$('[data-dialog]').forEach(b => b.onclick = guard(async () => {
@@ -1088,13 +1119,17 @@ function initHome() {
   });
   $('#job-cancel').onclick = guard(() => api('/api/job/cancel', {}));
   $('#open-go').onclick = () => openDB($('#open-path').value);
-  $('#quit').onclick = () => modal('<h2>ツールを終了しますか？</h2>', async () => { await api('/api/shutdown', {}); document.body.innerHTML = '<p style="padding:40px">終了しました。このタブは閉じて構いません。</p>'; }, '終了');
+  $('#quit').onclick = () => modal('<h2>ツールを終了しますか？</h2><p class="hint">記録した内容はDBに保存済みです。</p>', async () => {
+    Life.stop(); await api('/api/shutdown', {});
+    Life.ended('終了しました。このタブは閉じて構いません。');
+  }, '終了');
 }
 
 (async () => {
   initHome();
   Merge.init();
   Theme.init();
+  Life.start();
   $$('#nav button').forEach(b => b.onclick = () => show(b.dataset.view));
   await guard(refreshState)();
   if (S.state?.db) { dbOpened(); show('summary'); } else show('home');

@@ -19,7 +19,9 @@ Excel では扱いきれない規模(数十万〜100万行)でも軽快に動作
 
 ## 使い方
 
-1. `FolderManager.exe` をダブルクリック → ブラウザが開きます(黒いウィンドウを閉じると終了)。
+1. `FolderManager.exe` をダブルクリック → ブラウザが開きます(黒いウィンドウは表示されません)。
+   - 終了: 画面右上の「⏻ 終了」、またはブラウザのタブを閉じると自動で終了します(取込・スキャン中は完了まで待ちます)
+   - 起動中にもう一度ダブルクリックすると、新しく起動せず同じ画面を開きます
 2. ホーム画面で次のどれかを実行します。
    - **① Excelを取り込む**: FolderTreeExporter の出力ファイルを指定
    - **② フォルダをスキャンする**: 対象フォルダを指定(ネットワークドライブは「同時読み込み数」を増やすと速くなる場合があります)
@@ -74,7 +76,7 @@ Excel では扱いきれない規模(数十万〜100万行)でも軽快に動作
 ```
 go test ./...                                    # テスト
 FM_BIG=1 go test ./internal/ingest -run TestBigImport -v   # 約77万行の性能確認
-GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/FolderManager.exe ./cmd/foldermanager
+GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui" -o dist/FolderManager.exe ./cmd/foldermanager
 ```
 
 | パス | 内容 |
@@ -87,4 +89,4 @@ GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/FolderMana
 
 GitHub Actions(`.github/workflows/build.yml`)で push ごとにテストと Windows 用 exe のビルドを行い、成果物(Artifacts)としてダウンロードできます。
 
-起動オプション: `FolderManager.exe [-port 8765] [-projects フォルダ] [-no-browser] [開くDB]`(DBファイルを exe にドラッグ&ドロップしても開けます)。
+起動オプション: `FolderManager.exe [-port 8765] [-projects フォルダ] [-idle 3m] [-no-browser] [開くDB]`(`-idle`: タブが閉じられてから自動終了するまでの最大時間。`-no-browser` 指定時は自動終了しません)(DBファイルを exe にドラッグ&ドロップしても開けます)。
