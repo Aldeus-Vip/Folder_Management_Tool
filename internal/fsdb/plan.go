@@ -183,6 +183,7 @@ type planIndex struct {
 type ownerIndex struct {
 	nest
 	owners []string
+	eff    []OwnerFields // 親から引き継いだ段を補った担当(段ごとに、空欄なら親の値)
 }
 
 type kidGroup struct {
@@ -274,8 +275,13 @@ func (s *Store) ensureIndex() error {
 				rows.Close()
 				return err
 			}
-			oi.add(id, end)
+			k := oi.add(id, end)
 			oi.owners = append(oi.owners, o)
+			var parent OwnerFields
+			if e := oi.encl[k]; e >= 0 {
+				parent = oi.eff[e]
+			}
+			oi.eff = append(oi.eff, splitOwner(o).inherit(parent))
 		}
 		rows.Close()
 		s.oidx = oi
@@ -341,10 +347,8 @@ func (s *Store) enrich(ns []Node) error {
 				x.IVPath = vt.path(pi.vps[k])
 			}
 		}
-		if k := s.oidx.nearest(x.ID); k >= 0 && s.oidx.ids[k] != x.ID {
-			x.IOwner = s.oidx.owners[k]
-		} else if k >= 0 && s.oidx.encl[k] >= 0 {
-			x.IOwner = s.oidx.owners[s.oidx.encl[k]] // 自身にも設定がある場合の、親からの担当(表示用)
+		if k := s.oidx.nearest(x.ID); k >= 0 {
+			x.IOwner = s.oidx.eff[k].join() // 実際の担当(親から引き継いだ段を含む)
 		}
 		x.Inner, x.InnerS = s.inner(x.ID, x.End, x.IsDir, x.Size)
 		if x.Action == "" && x.IAction == "" {

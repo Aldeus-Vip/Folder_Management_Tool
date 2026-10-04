@@ -81,10 +81,7 @@ func (s *Store) WriteCSV(w io.Writer, f Filter) error {
 			}
 			dest = joinV(r.RootName, n.VPath, name)
 		}
-		owner := n.Owner
-		if owner == "" && n.IOwner != "" {
-			owner = n.IOwner + "(親フォルダ)"
-		}
+		owner := splitOwner(n.IOwner).Label()
 		inh := ""
 		if n.Action == "" && n.IAction != "" {
 			inh = ActionLabel(n.IAction)

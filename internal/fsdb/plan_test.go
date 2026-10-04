@@ -221,7 +221,7 @@ func TestActionMerge(t *testing.T) {
 	b.PlanMove([]int64{ids["総務"], ids["readme.txt"]}, nv, "総務部_佐藤")
 	b.VRename(shared, "共有", "総務部_佐藤")
 	a.VRename(shared, "共用", "経理部_山田")
-	a.PlanOwner([]int64{ids[`経理\2023`]}, "山田", "経理部_山田") // 担当も統合される
+	a.PlanOwner([]int64{ids[`経理\2023`]}, []string{"管理部", "", "", "山田"}, "経理部_山田") // 担当も統合される
 	b.PlanHold([]int64{ids[`総務\古い`]}, "総務部_佐藤")
 	a.Close()
 	b.Close()
@@ -253,7 +253,7 @@ func TestActionMerge(t *testing.T) {
 	if n := node(t, m, ids["総務"]); n.Action != ActMove || n.VPath != "総務" {
 		t.Fatalf("総務: %+v", n)
 	}
-	if n := node(t, m, ids[`経理\2023`]); n.Owner != "山田" {
+	if n := node(t, m, ids[`経理\2023`]); splitOwner(n.Owner) != (OwnerFields{"管理部", "", "", "山田"}) {
 		t.Fatalf("owner: %+v", n)
 	}
 	if n := node(t, m, ids[`総務\古い`]); n.Action != ActHold {
@@ -529,21 +529,29 @@ func TestHoldOwnerFilter(t *testing.T) {
 		t.Fatalf("inherit hold: %+v", n)
 	}
 	// 担当: 経理=山田、経理\2024=佐藤(配下で上書き)
-	s.PlanOwner([]int64{ids["経理"]}, "山田", "x")
-	s.PlanOwner([]int64{ids[`経理\2024`]}, "佐藤", "x")
-	if n := node(t, s, ids[`経理\2023\請求書.pdf`]); n.IOwner != "山田" || n.Owner != "" {
+	// 担当: 経理=部「管理部」・担当者「山田」、経理\2024=担当者「佐藤」だけ(部は親から引き継ぐ)
+	s.PlanOwner([]int64{ids["経理"]}, []string{"管理部", "", "", "山田"}, "x")
+	s.PlanOwner([]int64{ids[`経理\2024`]}, []string{"", "", "", "佐藤"}, "x")
+	if n := node(t, s, ids[`経理\2023\請求書.pdf`]); splitOwner(n.IOwner) != (OwnerFields{"管理部", "", "", "山田"}) || n.Owner != "" {
 		t.Fatalf("owner inherit: %+v", n)
 	}
-	if n := node(t, s, ids[`経理\2024`]); n.Owner != "佐藤" || n.IOwner != "山田" {
+	if n := node(t, s, ids[`経理\2024`]); splitOwner(n.Owner) != (OwnerFields{"", "", "", "佐藤"}) || splitOwner(n.IOwner) != (OwnerFields{"管理部", "", "", "佐藤"}) {
 		t.Fatalf("owner own: %+v", n)
 	}
+	if _, err := s.TreeFilterFor("9:x", ""); err == nil {
+		t.Fatal("bad level")
+	}
+	tf0, _ := s.TreeFilterFor("0:管理部", "")
+	if kids, _ := s.Children(ids["経理"], false, false, tf0); len(kids) != 3 {
+		t.Fatalf("level0 filter: %+v", kids)
+	}
 	// 担当を設定しても保留(アクション)は消えない。担当の解除で行が残らない
-	s.PlanOwner([]int64{ids[`経理\2023`]}, "山田", "x")
-	s.PlanOwner([]int64{ids[`経理\2023`]}, "", "x")
+	s.PlanOwner([]int64{ids[`経理\2023`]}, []string{"", "", "", "山田"}, "x")
+	s.PlanOwner([]int64{ids[`経理\2023`]}, nil, "x")
 	if n := node(t, s, ids[`経理\2023`]); n.Action != ActHold {
 		t.Fatalf("hold kept: %+v", n)
 	}
-	tf, err := s.TreeFilterFor("山田", "")
+	tf, err := s.TreeFilterFor("3:山田", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -557,7 +565,7 @@ func TestHoldOwnerFilter(t *testing.T) {
 			t.Fatal("2024 belongs to 佐藤")
 		}
 	}
-	tf, _ = s.TreeFilterFor("佐藤", "")
+	tf, _ = s.TreeFilterFor("3:佐藤", "")
 	kids, _ = s.Children(1, false, false, tf)
 	if len(kids) != 1 || kids[0].TF != 2 {
 		t.Fatalf("path only: %+v", kids)
@@ -567,11 +575,11 @@ func TestHoldOwnerFilter(t *testing.T) {
 	if len(kids) != 2 { // 総務・readme.txt
 		t.Fatalf("unassigned: %+v", kids)
 	}
-	tf, _ = s.TreeFilterFor("山田", "hold")
+	tf, _ = s.TreeFilterFor("3:山田", "hold")
 	if kids, _ := s.Children(ids["経理"], false, false, tf); len(kids) != 1 || kids[0].Name != "2023" {
 		t.Fatalf("owner+hold: %+v", kids)
 	}
-	ns, total, err := s.Search(Filter{Owner: "山田", Kind: "file"}, 0, 100)
+	ns, total, err := s.Search(Filter{Owner: "3:山田", Kind: "file"}, 0, 100)
 	if err != nil || total != 3 {
 		t.Fatalf("search owner: %d %v %+v", total, err, ns)
 	}
@@ -579,7 +587,8 @@ func TestHoldOwnerFilter(t *testing.T) {
 		t.Fatalf("search ihold: %d", total)
 	}
 	os, _ := s.Owners()
-	if len(os) != 2 || os[0].Size+os[1].Size != 4 {
+	// 部: 管理部(4)、担当者: 山田(3)・佐藤(1)
+	if len(os) != 3 || os[0] != (OwnerCount{0, "管理部", 4}) || os[1] != (OwnerCount{3, "山田", 3}) || os[2] != (OwnerCount{3, "佐藤", 1}) {
 		t.Fatalf("owners: %+v", os)
 	}
 }
