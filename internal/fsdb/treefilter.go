@@ -1,10 +1,8 @@
 package fsdb
 
 import (
-	"database/sql"
 	"fmt"
 	"sort"
-	"strings"
 )
 
 // ---- ツリーの絞り込み(担当 / 保留 / 5Sルール外れ) ----
@@ -86,7 +84,7 @@ func segsCond(segs [][2]int64) (string, []any) {
 
 // TreeFilterFor は絞り込みを作る(結果はアクション・担当・ルールを変えるまでキャッシュ)。
 //
-//	owner: 担当(親フォルダからの引き継ぎを含む)。"-" = 担当が決まっていない項目。"" = 指定なし
+//	owner: 担当(親フォルダからの引き継ぎを含む)。"段:値"(例 "1:業務推進課")。"-" = 担当が決まっていない項目。"" = 指定なし
 //	mode : "hold"(保留。親フォルダの設定を含む)/ "rule"(5Sルールに合わない項目)/ "unhandled"(未処理)/ ""
 func (s *Store) TreeFilterFor(owner, mode string) (*TreeFilter, error) {
 	if owner == "" && mode == "" {
@@ -105,13 +103,12 @@ func (s *Store) TreeFilterFor(owner, mode string) (*TreeFilter, error) {
 	var segs [][2]int64
 	all := [][2]int64{{1, maxID}}
 	if owner != "" {
-		oi := s.oidx
-		segs = oi.segments(func(k int32) bool {
-			if owner == "-" {
-				return k < 0
-			}
-			return k >= 0 && oi.owners[k] == owner
-		}, maxID)
+		match, err := s.oidx.matcher(owner)
+		if err != nil {
+			s.mu.Unlock()
+			return nil, err
+		}
+		segs = s.oidx.segments(match, maxID)
 	} else {
 		segs = all
 	}
@@ -160,45 +157,4 @@ func (s *Store) ruleHitSegs() ([][2]int64, error) {
 		}
 	}
 	return out, rows.Err()
-}
-
-// ---- 担当 ----
-
-// PlanOwner は担当を設定する(空 = 解除)。フォルダに設定すると配下に引き継がれる。
-func (s *Store) PlanOwner(ids []int64, owner, editor string) (*Report, error) {
-	owner = strings.TrimSpace(owner)
-	rep := &Report{}
-	err := s.writePlans(func(tx *sql.Tx) error {
-		for _, id := range ids {
-			if _, err := tx.Exec(`INSERT INTO plan(node_id, owner, editor, updated_at) VALUES(?,?,?,?)
-				ON CONFLICT(node_id) DO UPDATE SET owner=excluded.owner, editor=excluded.editor, updated_at=excluded.updated_at`, id, owner, editor, nowStr()); err != nil {
-				return err
-			}
-			rep.Applied++
-		}
-		return nil
-	})
-	return rep, err
-}
-
-// Owners は担当の一覧(設定した項目数の多い順)。Size には担当範囲のファイル数を入れる。
-func (s *Store) Owners() ([]Count, error) {
-	cs, err := s.counts(`SELECT owner, owner, count(*), 0 FROM plan WHERE owner!='' GROUP BY owner ORDER BY count(*) DESC, owner`)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.ensureIndex(); err != nil {
-		return nil, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	maxID := int64(len(s.pre.files) - 1)
-	for i := range cs {
-		o := cs[i].Key
-		for _, sg := range s.oidx.segments(func(k int32) bool { return k >= 0 && s.oidx.owners[k] == o }, maxID) {
-			f, _ := s.pre.count(sg[0], sg[1])
-			cs[i].Size += f
-		}
-	}
-	return cs, nil
 }

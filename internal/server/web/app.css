@@ -278,7 +278,10 @@ label.inl { display: block; margin: 4px 0; }
 .tabs button.on { border-color: var(--line); background: var(--surface); color: var(--ink); font-weight: 600; }
 .tabs.sub button { font-size: 12px; padding: 3px 10px; }
 .tabs .cnt { font-size: 11px; color: var(--ink3); margin-left: 3px; }
-.tabpane { min-height: 360px; }
+/* オプション: タブを切り替えても窓の高さが変わらないよう固定し、中身だけをスクロールする */
+#modal .box.fixed { height: min(88vh, 860px); display: flex; flex-direction: column; overflow: hidden; }
+#modal .box.fixed > h2, #modal .box.fixed > .tabs, #modal .box.fixed > .foot { flex: none; }
+#modal .box.fixed > .opbody { flex: 1; min-height: 0; overflow: auto; padding-right: 4px; }
 .catdesc { background: var(--bg); border-radius: 8px; padding: 6px 10px; margin-bottom: 10px; font-size: 12px; color: var(--ink2); }
 .rule { border: 1px solid var(--line); border-left: 4px solid var(--amber); border-radius: 8px; padding: 6px 8px; margin-bottom: 8px; background: var(--surface); }
 .rule.m-block { border-left-color: var(--red); }

@@ -116,7 +116,16 @@ function actHTML(r) {
   return memoMark(r);
 }
 const memoMark = r => r.memo ? ` <span title="${esc(r.memo)}">📝</span>` : '';
-const ownerHTML = r => r.own ? `<span class="own" title="担当(このフォルダに設定)">👤 ${esc(r.own)}</span>` : r.iown ? `<span class="iown" title="担当(親フォルダから引き継ぎ)">${esc(r.iown)}</span>` : '';
+// 担当は4段(部 / 課 / 担当 / 担当者)。保存形式は \x1f 区切り(区切りの無い旧形式は「担当」の段)
+const OWNER_LV = ['部', '課', '担当', '担当者'];
+const ownerFields = s => { if (!s) return ['', '', '', '']; const a = s.split('\x1f'); return a.length === 1 ? ['', '', a[0], ''] : [...a, '', '', '', ''].slice(0, 4); };
+const ownerLabel = f => f.map((v, i) => v ? `${OWNER_LV[i]}: ${v}` : '').filter(Boolean).join(' / ');
+// 実際の担当(空欄の段は親フォルダから引き継ぐ)を表示。この項目に設定した段は太字、引き継いだ段は灰色
+const ownerHTML = r => {
+  const eff = ownerFields(r.iown), own = ownerFields(r.own);
+  if (!eff.some(Boolean)) return '';
+  return `<span title="${esc(eff.map((v, i) => v ? `${OWNER_LV[i]}: ${v}${own[i] ? '' : '(親フォルダから)'}` : '').filter(Boolean).join('\n'))}">${eff.map((v, i) => v ? `<span class="${own[i] ? 'own' : 'iown'}">${esc(v)}</span>` : '').filter(Boolean).join('<span class="iown"> / </span>')}</span>`;
+};
 const tagsHTML = tags => (tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('');
 function dueHTML(due) {
   if (!due) return '';
@@ -495,7 +504,7 @@ const COL = {
   warn: { key: 'warn', label: '警告・整理のヒント', w: 200, render: warnHTML },
   action: { key: 'action', label: 'アクション(移動先)', w: 250, render: actHTML, sort: true },
   tags: { key: 'tags', label: 'タグ', w: 140, render: r => tagsHTML(r.tags) },
-  owner: { key: 'owner', label: '担当', w: 100, render: ownerHTML, sort: true, tip: '担当(フォルダに設定すると配下に引き継がれます)' },
+  owner: { key: 'owner', label: '担当(部/課/担当/担当者)', w: 180, render: ownerHTML, sort: true, tip: '担当(フォルダに設定すると配下に引き継がれます)' },
   due: { key: 'due', label: '期限', w: 96, render: r => dueHTML(r.due), sort: true },
   memo: { key: 'memo', label: 'メモ', w: 180, render: r => esc(r.memo) },
   editor: { key: 'editor', label: '作業者', w: 100, render: r => esc(r.ed), sort: true },
@@ -518,10 +527,11 @@ const Plan = {
     toast(`${fmtNum(r.applied)}件を「保留」にしました`);
     await afterEdit();
   },
-  async owner(rows, owner) {
+  async owner(rows, fields) {
     const ids = this.ids(rows); if (!ids.length) return;
-    const r = await api('/api/plan/owner', { ids, owner });
-    toast(owner ? `${fmtNum(r.applied)}件の担当を「${owner}」にしました` : `${fmtNum(r.applied)}件の担当を解除しました`);
+    const r = await api('/api/plan/owner', { ids, owner: fields });
+    const l = ownerLabel(fields);
+    toast(l ? `${fmtNum(r.applied)}件の担当を「${l}」にしました` : `${fmtNum(r.applied)}件の担当を解除しました`);
     await loadOwners();
     await afterEdit();
   },
@@ -878,34 +888,41 @@ const OwnerEdit = {
     const nodes = rows.filter(r => typeof r.id === 'number' && r.kind !== 'vdir');
     if (!nodes.length) return;
     const one = nodes.length === 1 ? nodes[0] : null;
-    const cur = one ? (one.own || '') : '';
+    // 初期値: 選んだ項目すべてで同じなら、その項目に設定した値
+    const owns = nodes.map(r => ownerFields(r.own));
+    const cur = OWNER_LV.map((_, i) => owns.every(o => o[i] === owns[0][i]) ? owns[0][i] : '');
+    const eff = one ? ownerFields(one.iown) : ['', '', '', ''];
+    const vals = i => [...new Set(S.owners.filter(o => o.level === i).map(o => o.value))];
     const m = modal(`<h2>👤 担当の設定${one ? `: ${esc(one.node?.n ?? one.n)}` : `(${nodes.length}件)`}</h2>
-      <p class="hint">フォルダに担当を設定すると、<b>配下すべてがその担当</b>になります(配下で別の担当を設定した場合はそちらを優先)。<br>
-      整理画面の「担当」で絞り込むと、担当者が自分の範囲だけを見て判断できます。担当者ごとに作業用コピーで作業し、最後に「アクションの統合」でまとめます。</p>
-      ${one?.iown && !one.own ? `<p class="hint">現在は親フォルダから「${esc(one.iown)}」を引き継いでいます。</p>` : ''}
-      <div class="form" style="grid-template-columns:80px 1fr"><span>担当</span><input type="text" id="ow-name" list="ownerlist" value="${esc(cur)}" placeholder="例: 業務推進課 / 山田"></div>
-      <datalist id="ownerlist">${S.owners.map(o => `<option value="${esc(o.key)}">`).join('')}</datalist>
-      <div style="margin-top:8px">${S.owners.slice(0, 20).map(o => `<button class="mini" data-o="${esc(o.key)}">${esc(o.key)}</button>`).join(' ')}</div>
-      <div style="margin-top:10px"><button id="ow-clear" ${nodes.some(r => r.own) ? '' : 'disabled'}>担当を解除する(親フォルダの担当に戻す)</button></div>`,
+      <p class="hint">フォルダに担当を設定すると、<b>配下すべてがその担当</b>になります。<br>
+      <b>空欄の段は親フォルダの値を引き継ぎます</b>(例: 上のフォルダに「部」、その中のフォルダに「課」だけを設定)。全段空欄で保存すると解除です。<br>
+      整理画面の「担当」で段ごとに絞り込めるので、担当者が自分の範囲だけを見て判断できます。</p>
+      <div class="form" style="grid-template-columns:80px 1fr">
+        ${OWNER_LV.map((l, i) => `<span>${l}</span><input type="text" data-lv="${i}" list="ownerlist${i}" value="${esc(cur[i])}" placeholder="${!cur[i] && eff[i] ? `空欄 → 親フォルダの「${esc(eff[i])}」` : '空欄可'}">`).join('')}
+      </div>
+      ${OWNER_LV.map((_, i) => `<datalist id="ownerlist${i}">${vals(i).map(v => `<option value="${esc(v)}">`).join('')}</datalist>`).join('')}
+      <div style="margin-top:10px"><button id="ow-clear" ${nodes.some(r => r.own) ? '' : 'disabled'}>担当を解除する(すべて親フォルダの担当に戻す)</button></div>`,
       async mm => {
-        const v = $('#ow-name', mm).value.trim();
-        if (!v) { toast('担当を入力してください(解除は「担当を解除する」)', true); return false; }
-        await Plan.owner(nodes, v);
+        const f = $$('[data-lv]', mm).map(x => x.value.trim());
+        await Plan.owner(nodes, f);
       }, '設定');
-    $$('[data-o]', m).forEach(b => b.onclick = () => { $('#ow-name', m).value = b.dataset.o; });
-    $('#ow-clear', m).onclick = guard(async () => { closeModal(); await Plan.owner(nodes.filter(r => r.own), ''); });
-    setTimeout(() => $('#ow-name', m)?.focus(), 50);
+    $('#ow-clear', m).onclick = guard(async () => { closeModal(); await Plan.owner(nodes.filter(r => r.own), []); });
+    setTimeout(() => $('[data-lv]', m)?.focus(), 50);
   },
 };
 async function loadOwners() {
   try { S.owners = await api('/api/owners'); } catch (e) { S.owners = []; }
   Views.organize.ownerOptions?.(); Views.list.ownerOptions?.(); Views.plan.ownerOptions?.();
 }
+// 担当の絞り込みの選択肢(値は "段:値")。段ごとにグループ化
 function ownerOptionsHTML(cur, allLabel) {
-  const has = S.owners.some(o => o.key === cur);
-  return `<option value="">${allLabel}</option>` + S.owners.map(o => `<option value="${esc(o.key)}">👤 ${esc(o.key)}(${fmtNum(o.size)}ファイル)</option>`).join('')
-    + `<option value="-">担当なし(未割り当て)</option>` + (cur && cur !== '-' && !has ? `<option value="${esc(cur)}">${esc(cur)}</option>` : '');
+  const has = cur === '-' || S.owners.some(o => `${o.level}:${o.value}` === cur);
+  return `<option value="">${allLabel}</option>` + OWNER_LV.map((l, i) => {
+    const os = S.owners.filter(o => o.level === i);
+    return os.length ? `<optgroup label="${l}">${os.map(o => `<option value="${i}:${esc(o.value)}">${l}: ${esc(o.value)}(${fmtNum(o.files)}ファイル)</option>`).join('')}</optgroup>` : '';
+  }).join('') + `<option value="-">担当なし(未割り当て)</option>` + (cur && !has ? `<option value="${esc(cur)}">${esc(ownerSpecLabel(cur))}</option>` : '');
 }
+const ownerSpecLabel = spec => spec === '-' ? '担当なし' : (([l, ...v]) => `${OWNER_LV[+l] || ''}: ${v.join(':')}`)(spec.split(':'));
 
 function updateTagList() { $('#taglist').innerHTML = S.tags.map(t => `<option value="${esc(t)}">`).join(''); }
 async function loadTags() { try { S.tags = (await api('/api/tags')).map(t => t.key); updateTagList(); } catch (e) { } }
@@ -1126,6 +1143,7 @@ const Options = {
     const builtin = (label, input, sel, hint) => `<span>${label}</span><span>${input || ''}</span><span>${sel || ''}</span><span class="hint">${hint || ''}</span>`;
     const md = modal(`<h2>⚙ オプション</h2>
       <div class="tabs" id="op-tabs">${tabs.map(([k, l]) => `<button data-tab="${k}" class="${this.tab === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <div class="opbody">
       <div class="tabpane" data-pane="general">
         <div class="optsec"><h3>テーマ</h3><span class="seg" id="op-theme">${[['auto', '🌓 自動'], ['light', '☀ ライト'], ['dark', '🌙 ダーク']].map(([k, l]) => `<button data-t="${k}" class="${t === k ? 'on' : ''}">${l}</button>`).join('')}</span>
           <span class="hint">「自動」はWindowsの設定に従います</span></div>
@@ -1187,7 +1205,7 @@ const Options = {
           </div>
           <p class="hint">当てはめるルール: 最大階層・直下の項目数・禁止文字・コピー/版管理的な名前・カスタムルール(禁止/警告のどちらも)。<br>保存時に全項目を判定し直します(大規模なDBでは数秒かかります)。</p>
         </div>
-      </div>` : ''}`,
+      </div>` : ''}</div>`,
       db ? async mm => {
         S.settings = await api('/api/settings', { oldYears: +$('#st-old', mm).value, pathLimit: +$('#st-path', mm).value, deepDepth: +$('#st-deep', mm).value, manyFiles: +$('#st-many', mm).value });
         toast('保存しています…');
@@ -1202,7 +1220,7 @@ const Options = {
         toast('保存しました');
         S.planv++; show(S.view);
       } : null, '保存', '閉じる');
-    md.querySelector('.box').classList.add('wide');
+    md.querySelector('.box').classList.add('wide', 'fixed');
     const showTab = k => {
       this.tab = k;
       $$('#op-tabs [data-tab]', md).forEach(b => b.classList.toggle('on', b.dataset.tab === k));
@@ -1473,7 +1491,7 @@ Views.summary = {
           <div class="card"><h2>作業者別・タグ別・担当別</h2>
             ${sm.editors.length ? `<table class="t"><tr><th>作業者</th><th class="num">設定数</th></tr>${sm.editors.map(a => `<tr><td>${esc(a.key)}</td><td class="num">${fmtNum(a.count)}</td></tr>`).join('')}</table>` : '<p class="muted">まだアクションはありません。</p>'}
             ${sm.tags.length ? `<p>${sm.tags.slice(0, 30).map(t => `<a data-tag="${esc(t.key)}"><span class="tag">${esc(t.key)} ${fmtNum(t.count)}</span></a>`).join('')}</p>` : ''}
-            ${S.owners.length ? `<h3 style="margin-top:10px">担当別(担当範囲のファイル数)</h3><table class="t">${S.owners.map(o => `<tr><td><a data-owner="${esc(o.key)}" title="整理画面でこの担当の範囲だけを表示">👤 ${esc(o.key)}</a></td><td class="num">${fmtNum(o.size)} ファイル</td></tr>`).join('')}</table>` : ''}
+            ${S.owners.length ? `<h3 style="margin-top:10px">担当別(担当範囲のファイル数)</h3><table class="t">${S.owners.map(o => `<tr><td class="muted">${OWNER_LV[o.level]}</td><td><a data-owner="${o.level}:${esc(o.value)}" title="整理画面でこの担当の範囲だけを表示">👤 ${esc(o.value)}</a></td><td class="num">${fmtNum(o.files)} ファイル</td></tr>`).join('')}</table>` : ''}
             <p><a onclick="show('plan')">アクション一覧を開く →</a></p></div>
         </div>
       </div>`;
@@ -1528,7 +1546,7 @@ Views.organize = {
         { key: 'fc', label: 'ファイル', w: 70, cls: 'num', render: r => r.kind === 'file' ? '' : fmtNum(r.fc) },
         { key: 's', label: 'サイズ', w: 80, cls: 'num', render: r => fmtSize(r.s) },
         { key: 'tags', label: 'タグ', w: 120, render: r => tagsHTML(r.tags) },
-        { key: 'owner', label: '担当', w: 90, render: ownerHTML },
+        { key: 'owner', label: '担当', w: 150, render: ownerHTML },
         { key: 'due', label: '期限', w: 96, render: r => dueHTML(r.due) },
         { key: 'warn', label: '警告', w: 220, render: r => (r.rule?.length ? `<span class="b mig" title="${esc(r.rule.join('\n'))}">⛔ 5Sルール ${r.rule.length > 1 ? r.rule.length : ''}</span>` : '') + (r.sim?.length ? `<span class="b org" title="同じ階層に似た名前: ${esc(r.sim.join(', '))}">⚠ 似た名前 ${r.sim.length}</span>` : '') + (r.kind !== 'vdir' && r.node ? warnHTML({ ...r.node, r5s: '' }) : '') },
       ],
@@ -1643,7 +1661,7 @@ Views.organize = {
   async applyFilter() {
     this.model.o = this.treeOpts();
     const o = this.model.o, chips = [];
-    if (o.owner) chips.push(o.owner === '-' ? '担当なし' : '👤 ' + o.owner);
+    if (o.owner) chips.push('👤 ' + ownerSpecLabel(o.owner));
     if (o.tf) chips.push({ hold: '⏸ 保留のみ', unhandled: '未処理のみ', rule: '⛔ 5Sルール外れのみ' }[o.tf]);
     $('#tr-filtered').innerHTML = chips.length ? `<span class="b org" title="該当する項目と、そこまでのフォルダ(薄い色)だけを表示しています">絞り込み: ${chips.map(esc).join(' + ')} <a id="tr-unfilter" title="絞り込みを解除">×</a></span>` : '';
     if (chips.length) $('#tr-unfilter').onclick = guard(async () => { $('#tr-owner').value = ''; $('#tr-filter').value = ''; await this.applyFilter(); });
@@ -1859,7 +1877,7 @@ Views.list = {
     modal(`<h2>検索結果すべてに一括操作</h2><p class="hint">現在の検索結果(${esc(n)})のすべての項目に適用します。</p>
       <div class="form" style="grid-template-columns:150px 300px">
         <span>操作</span><select id="bk-op"><option value="delete">削除を設定</option><option value="move">移動を設定(移動先を選択)</option><option value="hold">保留を設定</option><option value="clear">アクションを解除</option><option value="tag">タグを追加</option><option value="owner">担当を設定</option></select>
-        <span>タグ / 担当</span><input type="text" id="bk-tag" list="taglist" placeholder="タグ・担当を設定する場合"></div>`,
+        <span>タグ / 担当</span><input type="text" id="bk-tag" list="taglist" placeholder="タグ、または担当「部/課/担当/担当者」(空欄可。例: 整備業務部/業務推進課//山田)"></div>`,
       async m => {
         const op = $('#bk-op', m).value, tag = $('#bk-tag', m).value.trim();
         if ((op === 'tag' || op === 'owner') && !tag) { toast(op === 'tag' ? 'タグを入力してください' : '担当を入力してください', true); return false; }

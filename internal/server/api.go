@@ -292,9 +292,9 @@ func (a *App) apiVDelete(r *http.Request, s *fsdb.Store, code string) (any, erro
 // ---- アクション・タグ ----
 
 type idsReq struct {
-	IDs    []int64 `json:"ids"`
-	Target string  `json:"target"`
-	Owner  string  `json:"owner"`
+	IDs    []int64  `json:"ids"`
+	Target string   `json:"target"`
+	Owner  []string `json:"owner"` // 担当(部 / 課 / 担当 / 担当者)
 }
 
 func (a *App) apiPlanHold(r *http.Request, s *fsdb.Store, code string) (any, error) {
@@ -387,7 +387,7 @@ func (a *App) apiPlanFilter(r *http.Request, s *fsdb.Store, code string) (any, e
 	case "hold":
 		return s.PlanHold(ids, code)
 	case "owner":
-		return s.PlanOwner(ids, q.Tag, code)
+		return s.PlanOwner(ids, strings.Split(q.Tag, "/"), code) // 「部/課/担当/担当者」
 	case "clear":
 		return s.PlanClear(ids, code)
 	case "tag":

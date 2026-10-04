@@ -59,7 +59,7 @@ func TestBigPlan(t *testing.T) {
 	t0 = time.Now()
 	s.PlanDelete(del, "x")
 	t.Logf("delete %d files: %v", len(del), time.Since(t0))
-	s.PlanOwner(ids[:300], "担当A", "x")
+	s.PlanOwner(ids[:300], []string{"部A", "", "担当A"}, "x")
 	s.PlanHold(ids[600:700], "x")
 	r = s.Rules()
 	r.ApplyCurrent = true
@@ -71,7 +71,7 @@ func TestBigPlan(t *testing.T) {
 	for name, fn := range map[string]func() error{
 		"RuleViolations": func() error { _, err := s.RuleViolations(); return err },
 		"Filter owner": func() error {
-			tf, _ := s.TreeFilterFor("担当A", "")
+			tf, _ := s.TreeFilterFor("2:担当A", "")
 			_, err := s.Children(1, false, false, tf)
 			return err
 		},
@@ -80,7 +80,7 @@ func TestBigPlan(t *testing.T) {
 			_, err := s.Children(1, false, false, tf)
 			return err
 		},
-		"Search owner":     func() error { _, _, err := s.Search(Filter{Owner: "担当A"}, 0, 500); return err },
+		"Search owner":     func() error { _, _, err := s.Search(Filter{Owner: "2:担当A"}, 0, 500); return err },
 		"Search rule5s":    func() error { _, _, err := s.Search(Filter{Check: "rule5s"}, 0, 500); return err },
 		"Node(root)":       func() error { _, err := s.Node(1); return err },
 		"Children(root)":   func() error { _, err := s.Children(1, false, false, nil); return err },

@@ -312,7 +312,7 @@ func (ms *mergeSrc) planLabel(v planVal) string {
 		parts = append(parts, "メモ: "+v.Memo)
 	}
 	if v.Owner != "" {
-		parts = append(parts, "担当: "+v.Owner)
+		parts = append(parts, "担当: "+splitOwner(v.Owner).Label())
 	}
 	return strings.Join(parts, " / ")
 }

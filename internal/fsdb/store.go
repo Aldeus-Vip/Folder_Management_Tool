@@ -146,8 +146,8 @@ type Node struct {
 	Memo    string   `json:"memo"`
 	Editor  string   `json:"ed"` // 設定した作業者コード
 	Tags    []string `json:"tags"`
-	Owner   string   `json:"own"`           // 担当(この項目に設定)
-	IOwner  string   `json:"iown"`          // 担当(親フォルダから引き継ぎ)
+	Owner   string   `json:"own"`           // 担当(この項目に設定。段を \x1f で区切る)
+	IOwner  string   `json:"iown"`          // 実際の担当(空欄の段は親フォルダから引き継ぐ)
 	RuleMsg string   `json:"r5s,omitempty"` // 5Sルールに合わない点(現在の構成に当てはめた場合)
 	TF      int      `json:"tf,omitempty"`  // ツリーの絞り込み: 1=該当 2=該当項目への経路
 
@@ -297,7 +297,7 @@ type Filter struct {
 	State   string // 処理状況: unhandled | handled | delete | move | own
 	Editor  string
 	Tag     string
-	Owner   string // 担当(親フォルダからの引き継ぎを含む)。"-" = 担当なし
+	Owner   string // 担当(親フォルダからの引き継ぎを含む)。"段:値" / "-" = 担当なし
 	VParent string // 移動先の仮想フォルダ(その配下を含む)
 	Sort    string
 	Desc    bool
