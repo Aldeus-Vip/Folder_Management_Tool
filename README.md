@@ -174,6 +174,9 @@ GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui" -o d
 | `internal/osutil` | Windowsのファイル/フォルダ選択ダイアログ(エクスプローラー形式)など |
 | `internal/server` | JSON API と画面(`web/`) |
 
-リリース: `v` で始まるタグ(例: `v1.0.0`)を push すると、`.github/workflows/release.yml` が配布用 zip(exe・はじめにお読みください.txt・RELEASE_NOTES.md)を作って GitHub Release を作成します。変更点は `RELEASE_NOTES.md` に追記してください。
+リリース: `.github/workflows/release.yml` が配布用 zip(exe・はじめにお読みください.txt・RELEASE_NOTES.md)を作って GitHub Release に添付します。変更点は `RELEASE_NOTES.md` に追記してください。
+
+- `v` で始まるタグ(例: `v1.0.0`)を push する、または GitHub の画面で Release を publish する(タグは **このワークフローを含むコミット(main)** に付ける)
+- 作成済みの Release に後から添付する場合: Actions → release → Run workflow で、ブランチ(main)と添付先のタグを指定して実行
 
 起動オプション: `FolderManager.exe [-port 8765] [-projects フォルダ] [-idle 3m] [-no-browser] [開くDB]`

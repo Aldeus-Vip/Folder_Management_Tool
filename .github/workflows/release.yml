@@ -1,14 +1,26 @@
 name: release
-# v で始まるタグ(例: v1.0.0)を push すると、配布用 zip を作って GitHub Release を作成する。
-#   git tag v1.0.0 && git push origin v1.0.0
+# 配布用 zip(exe・はじめにお読みください.txt・RELEASE_NOTES.md)を作り、GitHub Release に添付する。
+#   ・v で始まるタグ(例: v1.0.0)を push する、または GitHub の画面で Release を publish する
+#     → Release が無ければ作成し、zip を添付する
+#   ・作成済みの Release に後から添付し直す場合: Actions → release → Run workflow で
+#     ブランチ(例: main)とタグ名を指定して実行(そのブランチの内容でビルドする)
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "添付先の Release のタグ(例: v1.0.0)"
+        required: true
 permissions:
   contents: write
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -18,14 +30,21 @@ jobs:
       - run: go test ./...
       - name: build
         run: |
-          VER="${GITHUB_REF_NAME#v}"
+          VER="${TAG#v}"
           mkdir -p "pkg/FolderManager_${VER}"
           GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui -X main.version=${VER}" -o "pkg/FolderManager_${VER}/FolderManager.exe" ./cmd/foldermanager
           cp "docs/はじめにお読みください.txt" RELEASE_NOTES.md "pkg/FolderManager_${VER}/"
           # 日本語のファイル名がWindowsで文字化けしないよう、UTF-8 フラグ付きで圧縮する(Python の zipfile)
           (cd pkg && python3 -m zipfile -c "FolderManager_${VER}.zip" "FolderManager_${VER}")
+          echo "ZIP=pkg/FolderManager_${VER}.zip" >> "$GITHUB_ENV"
           echo "VER=${VER}" >> "$GITHUB_ENV"
       - name: release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" "pkg/FolderManager_${VER}.zip" --title "FolderManager ${VER}" --notes-file RELEASE_NOTES.md
+        run: |
+          # 画面で作成済みの Release(タグの作成で起動した場合を含む)には添付だけ行う
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ZIP" --clobber
+          else
+            gh release create "$TAG" "$ZIP" --title "FolderManager ${VER}" --notes-file RELEASE_NOTES.md
+          fi
