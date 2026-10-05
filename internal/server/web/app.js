@@ -2073,7 +2073,25 @@ Views.plan = {
       this.grid.setEmpty('アクションはまだありません');
       $('#pl-state').onchange = $('#pl-editor').onchange = $('#pl-tag').onchange = $('#pl-owner').onchange = guard(() => this.load());
       $('#pl-csv').onclick = () => download('/api/export/list.csv', this.params());
-      $('#pl-ps1').onclick = () => modal(`<h2>PowerShell実行スクリプトの出力</h2><p class="hint">整理後のフォルダ構成を作成し、「削除」「移動(名前変更を含む)」を実行するスクリプト(.ps1)を出力します。<br>
+      $('#pl-wo').onclick = guard(async () => {
+        const exts = await api('/api/migexts');
+        const m = modal(`<h2>作業指示CSVの出力</h2>
+          <p class="hint">判断結果を<b>作業指示CSV</b>(実行の正本)として出力します。承認(Approval 列)は Pending で出力するので、レビュー後に Approved に変えてください。<br>
+          ・行は子→親の実行順(ExecOrder)です。親フォルダの削除に含まれる配下の削除は省略し、配下の移動は残します(先に移動してから削除)。<br>
+          ・<b>Location</b>: ファイルは下の拡張子リストで判定(含まれれば SharePoint、それ以外は FileServer)、フォルダは Both。移行ログによる補正は別途行ってください。<br>
+          ・Note 列: 配下に保留がある削除、SharePoint で使えない文字・400文字超のパス、アクセスできなかった項目などの注意。</p>
+          <h3>初動移行(SharePoint へ移行済み)の拡張子</h3>
+          <textarea id="wo-exts" style="width:100%;height:70px" placeholder="例: docx, xlsx, pptx, pdf(「,」・空白・改行区切り。大文字/小文字は区別しません)">${esc(exts.join(', '))}</textarea>
+          <div class="btns" style="margin-top:8px"><button data-ts>新構成フォルダ一覧(target_structure.csv)</button></div>`,
+          async mm => {
+            await api('/api/migexts', { exts: $('#wo-exts', mm).value });
+            download('/api/export/workorder.csv');
+          }, '作業指示CSVをダウンロード');
+        $('[data-ts]', m).onclick = () => download('/api/export/target_structure.csv');
+      });
+      $('#pl-ps1').onclick = () => modal(`<h2>PowerShell実行スクリプト(簡易)の出力</h2><p class="hint"><b>ファイルサーバーだけ</b>を対象に、整理後のフォルダ構成を作成し「削除」「移動(名前変更を含む)」を実行するスクリプト(.ps1)を出力します。<br>
+        ・SharePoint へ移行済みのファイルは操作できません。移行と組み合わせる場合は「作業指示CSV」を使ってください。<br>
+        ・Windows PowerShell 5.1 では別ドライブへのフォルダ移動ができません(PowerShell 7 で実行してください)。<br>
         ・<b>既定はドライラン</b>です。そのまま実行しても何も変更せず、実行予定をログCSVに書き出します。<br>
         ・内容を確認後、<code>-Execute</code> を付けて実行すると実際に変更します。<br>
         ・整理後のルートの場所は「⚙ オプション」で設定、または <code>-TargetRoot "\\\\srv\\share\\整理後"</code> で指定できます。<br>

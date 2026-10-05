@@ -2,6 +2,7 @@ package fsdb
 
 import (
 	"context"
+	"encoding/csv"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -786,5 +787,72 @@ func TestVChildrenOrder(t *testing.T) {
 	}
 	if strings.Join(got, ",") != "005_共有,０１０_管理職,020_業務,000_リンク,readme.txt" {
 		t.Fatalf("order: %v", got)
+	}
+}
+
+// 作業指示CSV
+func TestWorkOrder(t *testing.T) {
+	s, ids := testDB(t)
+	v, _, _ := s.VCreate(VRoot, "010_経理", "x")
+	s.PlanMoveAs([]int64{ids["経理"]}, v, "会計", "山田")
+	s.PlanDelete([]int64{ids[`経理\2023`], ids["総務"], ids["readme.txt"], ids[`経理\2023\見積.xlsx`]}, "x")
+	s.PlanHold([]int64{ids[`総務\古い`]}, "x")
+	s.PlanMove([]int64{ids[`総務\規程.docx`]}, v, "x")
+	s.SetMigratedExts(".DOCX, pdf")
+	var b strings.Builder
+	if err := s.WriteWorkOrder(&b); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := csv.NewReader(strings.NewReader(strings.TrimPrefix(b.String(), "\uFEFF"))).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	col := map[string]int{}
+	for i, h := range rows[0] {
+		col[h] = i
+	}
+	by := map[string][]string{}
+	var order []string
+	for _, r := range rows[1:] {
+		p := strings.TrimPrefix(r[col["SourcePath"]], `\\srv\share\`)
+		by[p] = r
+		order = append(order, p)
+	}
+	if _, ok := by[`経理\2023\見積.xlsx`]; ok {
+		t.Fatal("delete inside deleted folder should be omitted")
+	}
+	if len(order) != 6 {
+		t.Fatalf("rows: %v", order)
+	}
+	pos := func(p string) int {
+		for i, x := range order {
+			if x == p {
+				return i
+			}
+		}
+		return -1
+	}
+	if pos(`総務\規程.docx`) > pos("総務") || pos(`総務\古い`) > pos("総務") || pos(`経理\2023`) > pos("経理") {
+		t.Fatalf("child before parent: %v", order)
+	}
+	if r := by["経理"]; r[col["Action"]] != "Move" || r[col["TargetRelPath"]] != `010_経理\会計` || r[col["Location"]] != "Both" || r[col["DecidedBy"]] != "山田" || r[col["Approval"]] != "Pending" {
+		t.Fatalf("経理: %v", r)
+	}
+	if r := by[`総務\規程.docx`]; r[col["Location"]] != "SharePoint" || r[col["ItemType"]] != "File" {
+		t.Fatalf("docx: %v", r)
+	}
+	if r := by["readme.txt"]; r[col["Location"]] != "FileServer" || r[col["Action"]] != "Delete" {
+		t.Fatalf("readme: %v", r)
+	}
+	if n := by["総務"][col["Note"]]; !strings.Contains(n, "移動1件") || !strings.Contains(n, "保留1件") {
+		t.Fatalf("note: %q", n)
+	}
+	if r := by[`総務\古い`]; r[col["Action"]] != "Hold" {
+		t.Fatalf("hold: %v", r)
+	}
+	var ts strings.Builder
+	s.WriteTargetStructure(&ts)
+	if !strings.Contains(ts.String(), "010_経理,1,") {
+		t.Fatalf("target structure: %q", ts.String())
 	}
 }
