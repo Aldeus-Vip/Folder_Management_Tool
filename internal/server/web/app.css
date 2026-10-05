@@ -295,3 +295,6 @@ label.inl { display: block; margin: 4px 0; }
 .rule input.val { min-width: 220px; flex: 1; }
 .builtin { display: grid; grid-template-columns: 280px 140px 110px 1fr; gap: 6px 8px; align-items: center; margin-bottom: 10px; }
 button.mini { padding: 0 6px; font-size: 12px; }
+.lnk { color: var(--accent); font-weight: 700; }
+.g-row.vlink .nm { font-style: italic; color: var(--accent); }
+.g-row.vlink.broken .nm { color: var(--gone); text-decoration: line-through; }

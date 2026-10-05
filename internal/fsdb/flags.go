@@ -43,6 +43,9 @@ var (
 	versionWords = []string{"旧", "最新", "最終", "修正版", "確定版", "バックアップ", "作業用"}
 )
 
+// nameFlagMask は名前だけから決まるフラグ(名前を変えれば変わる)。
+const nameFlagMask = FlagBadChar | FlagTrailing | FlagReserved | FlagTempFile | FlagCopyName | FlagVersionName
+
 // NameFlags はファイル/フォルダ名だけから判定できるフラグを返す。
 func NameFlags(name string, isDir bool) int {
 	f := 0

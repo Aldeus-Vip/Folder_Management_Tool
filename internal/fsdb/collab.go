@@ -113,8 +113,8 @@ func mustAbs(p string) string { a, _ := filepath.Abs(p); return a }
 
 type planVal struct{ Action, VParent, NewName, Due, Memo, Owner string }
 type vnodeVal struct {
-	Parent, Name, Memo string
-	Deleted            bool
+	Parent, Name, Memo, Link string
+	Deleted                  bool
 }
 
 type mergeSrc struct {
@@ -172,7 +172,7 @@ func loadMergeSrc(path string, base *mergeSrc) (*mergeSrc, error) {
 		return out, rows.Err()
 	}
 	loadVn := func(table string, withEditor bool) (map[string]vnodeVal, error) {
-		rows, err := st.DB.Query(`SELECT uuid, parent, name, memo, deleted, editor FROM ` + table)
+		rows, err := st.DB.Query(`SELECT uuid, parent, name, memo, deleted, editor, link FROM ` + table)
 		if err != nil {
 			return nil, err
 		}
@@ -181,7 +181,7 @@ func loadMergeSrc(path string, base *mergeSrc) (*mergeSrc, error) {
 		for rows.Next() {
 			var id, ed string
 			var v vnodeVal
-			rows.Scan(&id, &v.Parent, &v.Name, &v.Memo, &v.Deleted, &ed)
+			rows.Scan(&id, &v.Parent, &v.Name, &v.Memo, &v.Deleted, &ed, &v.Link)
 			out[id] = v
 			if withEditor {
 				ms.vnEditor[id] = ed
@@ -322,6 +322,9 @@ func (ms *mergeSrc) vnodeLabel(v vnodeVal) string {
 		return "削除"
 	}
 	l := "名前: " + v.Name + " / 場所: " + joinV("(整理後)", ms.vpath(v.Parent))
+	if v.Link != "" {
+		l = "ショートカット" + l[len("名前"):]
+	}
 	if v.Memo != "" {
 		l += " / メモ: " + v.Memo
 	}
@@ -658,7 +661,7 @@ func (ma *MergeAnalysis) Apply(out string, choices map[string]int) ([]string, er
 		}
 	}
 	for id, v := range ma.vn {
-		if _, err := tx.Exec(`INSERT INTO vnodes VALUES(?,?,?,?,?,?,?)`, id, v.Parent, v.Name, v.Memo, ma.vnEd[id], now, v.Deleted); err != nil {
+		if _, err := tx.Exec(`INSERT INTO vnodes(uuid, parent, name, memo, editor, updated_at, deleted, link) VALUES(?,?,?,?,?,?,?,?)`, id, v.Parent, v.Name, v.Memo, ma.vnEd[id], now, v.Deleted, v.Link); err != nil {
 			return nil, err
 		}
 	}
@@ -681,7 +684,7 @@ func (ma *MergeAnalysis) Apply(out string, choices map[string]int) ([]string, er
 			codes = append(codes, s.Code)
 		}
 	}
-	st.DB.Exec(`DELETE FROM meta WHERE key IN ('editor_code','copied_at','master_path')`)
+	st.DB.Exec(`DELETE FROM meta WHERE key IN ('editor_code','copied_at','master_path','rule_hits_ver')`) // 5Sの判定は開いたときに作り直す
 	if err := st.SetMeta(map[string]string{"master_rev": newUUID(), "merged_from": strings.Join(codes, ", "), "merged_at": now}); err != nil {
 		return nil, err
 	}
@@ -728,7 +731,14 @@ func (s *Store) ImportPlans(otherDB string) (int64, error) {
 	if has == 0 {
 		return 0, nil
 	}
-	if _, err := conn.ExecContext(ctxBG, `INSERT OR REPLACE INTO main.vnodes SELECT * FROM other.vnodes`); err != nil {
+	link := "''"
+	var lcol int
+	conn.QueryRowContext(ctxBG, `SELECT count(*) FROM pragma_table_info('vnodes', 'other') WHERE name='link'`).Scan(&lcol)
+	if lcol > 0 {
+		link = "link" // リンク先の項目IDは統合後のDBでは変わるため、実項目へのショートカットは引き継がない
+	}
+	if _, err := conn.ExecContext(ctxBG, `INSERT OR REPLACE INTO main.vnodes(uuid, parent, name, memo, editor, updated_at, deleted, link)
+		SELECT uuid, parent, name, memo, editor, updated_at, deleted, `+link+` FROM other.vnodes WHERE `+link+` NOT LIKE 'n:%'`); err != nil {
 		return 0, err
 	}
 	owner := "''"

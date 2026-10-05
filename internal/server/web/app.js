@@ -456,9 +456,9 @@ class VTreeModel extends TreeModel {
     const all = await api('/api/vtree');
     const chain = [];
     for (let v = all.find(x => x.uuid === uuid); v && v.uuid !== 'root'; v = all.find(x => x.uuid === v.parent)) chain.unshift(v.uuid);
-    for (const u of chain.slice(0, -1)) { const i = this.indexOf('v:' + u); if (i >= 0) await this.expand(i); }
     const root = this.indexOf('v:root');
     if (root >= 0 && chain.length) await this.expand(root);
+    for (const u of chain.slice(0, -1)) { const i = this.indexOf('v:' + u); if (i >= 0) await this.expand(i); }
     return this.indexOf('v:' + uuid);
   }
 }
@@ -473,7 +473,7 @@ function vrow(v) {
 }
 
 function nameCell(r, tree, label) {
-  const icon = r.kind === 'vdir' ? '🗂' : (r.f & FL.access) ? '🔒' : r.dir ? (r._open ? '📂' : '📁') : fileIcon(r.x);
+  const icon = r.kind === 'vlink' ? '<span class="lnk" title="ショートカット(ダブルクリックでリンク先へ)">↪</span>' : r.kind === 'vdir' ? '🗂' : (r.f & FL.access) ? '🔒' : r.dir ? (r._open ? '📂' : '📁') : fileIcon(r.x);
   const nm = `<span class="nm" title="${esc(r.path || r.n)}">${esc(label ?? r.n)}</span>`;
   if (!tree) return `<span class="ico">${icon}</span>${nm}`;
   const conn = r.d === 0 ? '' : (r._last ? '┗' : '┣');
@@ -572,7 +572,7 @@ function showReport(r, verb) {
   modal(`<h2>${verb}: ${fmtNum(r.applied)}件を設定しました</h2>
     ${blocked.length ? `<h3>整理ルール(5S)に合わないため設定しなかった項目: ${blocked.length}件</h3>${blocked.slice(0, 50).map(i => li(i, 'block')).join('')}` : ''}
     ${warned.length ? `<h3>警告(設定はしています): ${warned.length}件</h3>${warned.slice(0, 50).map(i => li(i, '')).join('')}` : ''}
-    <p class="hint">ルールは「⚙ オプション」→「整理後の構成ルール(5S)」で変更できます。</p>`, null, '', '閉じる');
+    <p class="hint">名前がルールに合わない場合は、右クリック →「移動…」の「移動後の名前」で直してから移動できます。ルールは「⚙ オプション」→「5Sルール」で変更できます。</p>`, null, '', '閉じる');
 }
 function showIssue(is, verb) {
   if (!is || (!is.blocks?.length && !is.warns?.length)) return false;
@@ -728,6 +728,11 @@ function ownerItems(nodes) {
 const Props = {
   show(r) {
     if (r.kind === 'vdir') return this.showV(r);
+    if (r.kind === 'vlink') return modal(`<h2>↪ プロパティ(ショートカット)</h2><div style="font-weight:600">${esc(r.n)}</div>
+      <p class="hint">整理後のフォルダ構成の中で、リンク先へ飛ぶための目印です(実際のファイルは作られません)。</p>
+      <dl class="props"><dt>リンク先</dt><dd style="word-break:break-all">${esc(r.linkPath || '')}${r.broken ? `<div class="issue">${esc(r.broken)}</div>` : ''}</dd>
+      ${r.ed ? `<dt>作成・変更</dt><dd>${esc(r.ed)}</dd>` : ''}</dl>
+      <div class="btns"><button data-j>↪ リンク先へ移動</button></div>`, null, '', '閉じる').querySelector('[data-j]').onclick = () => { closeModal(); guard(() => Shortcut.jump(r))(); };
     const n = r.node || r;
     const vp = r.kind ? r.nvpath : r.vpath;
     const st = r.act ? (r.act === 'delete' ? '<span class="actb delete">削除</span>' : `<span class="actb move">移動</span> → ${esc(vpathLabel(vp))}${r.nn ? ` (名前: ${esc(r.nn)})` : ''}`)
@@ -801,15 +806,19 @@ const MoveFlow = {
     const union = [...new Set(nodes.flatMap(r => r.tags || []))];
     const m = modal(`<h2>📦 ${nodes.length === 1 ? `「${esc(one.node?.n ?? one.n)}」` : `${nodes.length}件`}を移動</h2>
       <p class="hint">期限とタグを設定して OK を押すと、<b>右の「整理後のフォルダ構成」から移動先のフォルダ(🗂)を選ぶ</b>状態になります(Esc / キャンセルで中止)。</p>
+      ${one ? `<h3>移動後の名前</h3><input type="text" id="mv-name" style="width:100%" value="${esc(one.nn || one.node?.n || one.n)}">
+        <p class="hint" style="margin-top:2px">5Sルール(名前の形式など)は<b>移動後の名前</b>で判定します。ルールに合わない名前は、ここで直してから移動できます。</p>` : ''}
       <h3>期限</h3><div id="mv-due"></div>
       <h3 style="margin-top:10px">タグ(目的・種類)</h3><div id="mv-tags"></div>`,
       () => {
         const due = dueW.get(), tags = tagW.get();
+        const orig = one ? (one.node?.n ?? one.n) : '', nn = one ? $('#mv-name', m).value.trim() : '';
+        const newName = one && nn && nn !== (one.nn || orig) ? nn : '';
         Pick.start(`${nodes.length}件の移動先を、右の「整理後のフォルダ構成」からクリックして選んでください`, async v => {
           const ids = Plan.ids(nodes);
           const add = tags.filter(t => !union.includes(t)), remove = union.filter(t => !tags.includes(t));
           if (add.length || remove.length) await api('/api/tags', { ids, add, remove }); // タグ必須ルールのため先に設定
-          const rep = await api('/api/plan/move', { ids, target: v.uuid });
+          const rep = await api('/api/plan/move', { ids, target: v.uuid, newName });
           const blocked = new Set((rep.issues || []).filter(i => i.blocks?.length).map(i => i.id));
           const moved = ids.filter(id => !blocked.has(id));
           if (moved.length) await api('/api/plan/fields', { ids: moved, due });
@@ -927,6 +936,48 @@ const ownerSpecLabel = spec => spec === '-' ? '担当なし' : (([l, ...v]) => `
 function updateTagList() { $('#taglist').innerHTML = S.tags.map(t => `<option value="${esc(t)}">`).join(''); }
 async function loadTags() { try { S.tags = (await api('/api/tags')).map(t => t.key); updateTagList(); } catch (e) { } }
 
+// ===== ショートカット(整理後の構成の中で、別の場所へ飛ぶための目印。実際のファイルは作らない) =====
+const Shortcut = {
+  target(r) { return r.kind === 'vdir' ? 'v:' + r.uuid : 'n:' + r.id; },
+  label(r) { return r.kind === 'vdir' ? (r.uuid === 'root' ? vroot() : r.n) : (r.nn || r.node?.n || r.n); },
+  item(r) {
+    return { label: 'ショートカットを作成…', icon: '↪', title: '整理後のフォルダ構成の中に、この項目へ飛ぶショートカットを置きます', onClick: () => this.create(r) };
+  },
+  create(r) {
+    if (S.view !== 'organize') return;
+    const target = this.target(r), name0 = `${this.label(r)} - ショートカット`;
+    Pick.start(`「${this.label(r)}」へのショートカットを置く場所を、右の「整理後のフォルダ構成」からクリックして選んでください`, async v => {
+      const name = prompt('ショートカットの名前', name0);
+      if (!name?.trim()) return;
+      const res = await api('/api/vlink', { parent: v.uuid, target, name: name.trim() });
+      toast('ショートカットを作成しました');
+      await afterEdit();
+      await Views.organize.focusV(res.uuid);
+    });
+  },
+  // リンク先をツリー上で開いて選択する
+  async jump(r) {
+    const o = Views.organize, loc = await api('/api/vlocate?target=' + encodeURIComponent(r.link));
+    if (loc.left) {
+      toast(`リンク先は${loc.reason}。現在のフォルダ構成で表示します`);
+      return o.reveal(loc.left);
+    }
+    if (!loc.placed) return o.focusV(loc.vfolder);
+    const m = o.vmodel;
+    let i = await m.revealV(loc.vfolder);
+    if (i >= 0) await m.expand(i);
+    for (const id of [loc.placed, ...(loc.path || [])]) {
+      if (id === loc.target) break;
+      i = m.indexOf('n:' + id);
+      if (i < 0) break;
+      await m.expand(i);
+    }
+    o.vt.refresh();
+    if (o.vt.focusKey('n:' + loc.target)) Sel.set(o.vt.selected(), o.vt);
+    else toast('リンク先を表示できませんでした', true);
+  },
+};
+
 // 仮想フォルダの操作
 const VOps = {
   // 新しい仮想フォルダを作る(作ったフォルダのIDを返す)。pick=true は移動先選択中(画面の更新は移動後に行う)
@@ -963,6 +1014,8 @@ const VOps = {
     await afterEdit();
   },
   async del(v) {
+    if (v.kind === 'vlink') return modal(`<h2>ショートカット「${esc(v.n)}」を削除しますか？</h2><p class="hint">リンク先の項目は変わりません。</p>`,
+      async () => { await api('/api/vdelete', { uuid: v.uuid }); toast('ショートカットを削除しました'); await afterEdit(); }, '削除');
     modal(`<h2>仮想フォルダ「${esc(v.n)}」を削除しますか？</h2><p class="hint">配下の仮想フォルダも削除されます。ここへ「移動」を設定していた項目(${fmtNum(v.fc)}ファイル)は、移動の設定が解除され「未処理」に戻ります。</p>`,
       async () => { const r = await api('/api/vdelete', { uuid: v.uuid }); toast(`削除しました(${r.cleared}件の移動を解除)`); await afterEdit(); }, '削除');
   },
@@ -1536,34 +1589,34 @@ Views.organize = {
       },
       onContext: (rows, e, r) => {
         if (!r) return;
-        Menu.show(e.clientX, e.clientY, [...actionItems(rows), '-', ...(rows.length === 1 ? browseItems(r, false) : [{ label: 'プロパティ(先頭の項目)', icon: 'ℹ', onClick: () => Props.show(r) }])]);
+        Menu.show(e.clientX, e.clientY, [...actionItems(rows), '-', ...(rows.length === 1 ? [Shortcut.item(r), ...browseItems(r, false)] : [{ label: 'プロパティ(先頭の項目)', icon: 'ℹ', onClick: () => Props.show(r) }])]);
       },
     });
     this.vt = new Grid($('#vt-grid'), {
       keyOf: r => r.key, draggable: true,
       columns: [
         { key: 'name', label: '名前(整理後)', w: 300, render: r => nameCell(r, true, r.uuid === 'root' ? vroot() : r.n) + (r.nn && r.kind !== 'vdir' ? ` <span class="muted" title="元の名前">(元: ${esc(r.node.n)})</span>` : '') },
-        { key: 'fc', label: 'ファイル', w: 70, cls: 'num', render: r => r.kind === 'file' ? '' : fmtNum(r.fc) },
-        { key: 's', label: 'サイズ', w: 80, cls: 'num', render: r => fmtSize(r.s) },
+        { key: 'fc', label: 'ファイル', w: 70, cls: 'num', render: r => r.kind === 'file' || r.kind === 'vlink' ? '' : fmtNum(r.fc) },
+        { key: 's', label: 'サイズ', w: 80, cls: 'num', render: r => r.kind === 'vlink' ? '' : fmtSize(r.s) },
         { key: 'tags', label: 'タグ', w: 120, render: r => tagsHTML(r.tags) },
         { key: 'owner', label: '担当', w: 150, render: ownerHTML },
         { key: 'due', label: '期限', w: 96, render: r => dueHTML(r.due) },
-        { key: 'warn', label: '警告', w: 220, render: r => (r.rule?.length ? `<span class="b mig" title="${esc(r.rule.join('\n'))}">⛔ 5Sルール ${r.rule.length > 1 ? r.rule.length : ''}</span>` : '') + (r.sim?.length ? `<span class="b org" title="同じ階層に似た名前: ${esc(r.sim.join(', '))}">⚠ 似た名前 ${r.sim.length}</span>` : '') + (r.kind !== 'vdir' && r.node ? warnHTML({ ...r.node, r5s: '' }) : '') },
+        { key: 'warn', label: '警告', w: 220, render: r => r.kind === 'vlink' ? (r.broken ? `<span class="b org" title="${esc(r.broken)}">⚠ ${esc(r.broken)}</span>` : `<span class="muted" title="${esc(r.linkPath)}">↪ ${esc(r.linkPath)}</span>`) : (r.rule?.length ? `<span class="b mig" title="${esc(r.rule.join('\n'))}">⛔ 5Sルール ${r.rule.length > 1 ? r.rule.length : ''}</span>` : '') + (r.sim?.length ? `<span class="b org" title="同じ階層に似た名前: ${esc(r.sim.join(', '))}">⚠ 似た名前 ${r.sim.length}</span>` : '') + (r.kind !== 'vdir' && r.node ? warnHTML({ ...r.node, r5s: '' }) : '') },
       ],
-      rowClass: r => (r.rule?.length ? 'mig' : r.kind === 'vdir' ? 'vdir' : r.kind === 'dir' ? 'dir' : '') + (r.sim?.length ? ' sim' : ''),
+      rowClass: r => (r.rule?.length ? 'mig' : r.kind === 'vdir' ? 'vdir' : r.kind === 'dir' ? 'dir' : r.kind === 'vlink' ? 'vlink' + (r.broken ? ' broken' : '') : '') + (r.sim?.length ? ' sim' : ''),
       onSelect: rows => {
         if (Pick.on) { if (rows.length) guard(() => Pick.choose(rows[0]))(); return; }
         Sel.set(rows, this.vt);
       },
       onToggle: guard((r, i) => this.toggle(this.vmodel, this.vt, i)),
-      onOpen: guard((r, i) => Pick.on ? null : r.kind === 'file' ? openFile(r) : r._has ? this.toggle(this.vmodel, this.vt, i) : null),
+      onOpen: guard((r, i) => Pick.on ? null : r.kind === 'vlink' ? Shortcut.jump(r) : r.kind === 'file' ? openFile(r) : r._has ? this.toggle(this.vmodel, this.vt, i) : null),
       onArrow: guard(async (r, i, right) => { if (r._has && right !== !!r._open) await this.toggle(this.vmodel, this.vt, i); }),
       onKeyAction: k => {
         if (Pick.on) return false;
         const r = S.sel[0];
         if (k === 'F2' && S.sel.length === 1) { guard(() => this.rename(r))(); return true; }
         if (k === 'Delete' || k === 'Backspace') { // 仮想フォルダは削除、配置した項目は移動の解除
-          if (S.sel.length === 1 && r.kind === 'vdir') { if (r.uuid !== 'root') guard(() => VOps.del(r))(); }
+          if (S.sel.length === 1 && (r.kind === 'vdir' || r.kind === 'vlink')) { if (r.uuid !== 'root') guard(() => VOps.del(r))(); }
           else guard(() => Plan.clear(S.sel.filter(x => x.kind !== 'vdir' && x.act)))();
           return true;
         }
@@ -1616,12 +1669,23 @@ Views.organize = {
       ]);
     }
     if (!r) return Menu.show(e.clientX, e.clientY, [{ label: `新規フォルダ(「${vroot()}」の直下)`, icon: '➕', onClick: () => VOps.new(this.vmodel.rows[0]) }]);
-    const vdirs = rows.filter(x => x.kind === 'vdir'), nodes = rows.filter(x => x.kind !== 'vdir');
+    const vdirs = rows.filter(x => x.kind === 'vdir' || x.kind === 'vlink'), nodes = rows.filter(x => x.kind !== 'vdir' && x.kind !== 'vlink');
     if (rows.length > 1) {
       return Menu.show(e.clientX, e.clientY, vdirs.length && !nodes.length ? [{ label: `移動…(${vdirs.length}件の仮想フォルダ)`, icon: '📦', onClick: () => VOps.move(vdirs) }]
         : [{ label: `移動…(${nodes.length}件)`, icon: '📦', onClick: () => MoveFlow.start(nodes) },
           { label: '解除', icon: '↺', disabled: !nodes.some(x => x.act), onClick: () => Plan.clear(nodes.filter(x => x.act)) },
           { label: 'タグ / メモの編集…', icon: '🏷', onClick: () => EditNotes.show(nodes) }]);
+    }
+    if (r.kind === 'vlink') {
+      return Menu.show(e.clientX, e.clientY, [
+        { label: 'リンク先へ移動', icon: '↪', key: 'ダブルクリック', onClick: () => Shortcut.jump(r) },
+        '-',
+        { label: '名前の変更', icon: '✏', key: 'F2', onClick: () => VOps.rename(r) },
+        { label: '移動…', icon: '📦', onClick: () => VOps.move([r]) },
+        { label: '削除', icon: '🗑', key: 'Del', onClick: () => VOps.del(r) },
+        '-',
+        { label: 'プロパティ', icon: 'ℹ', onClick: () => Props.show(r) },
+      ]);
     }
     if (r.kind === 'vdir') {
       const root = r.uuid === 'root';
@@ -1630,6 +1694,7 @@ Views.organize = {
         { label: '移動…', icon: '📦', disabled: root, onClick: () => VOps.move([r]) },
         { label: '削除', icon: '🗑', key: 'Del', disabled: root, onClick: () => VOps.del(r) },
         { label: '新規フォルダ(この直下)', icon: '➕', onClick: () => VOps.new(r) },
+        Shortcut.item(r),
         '-',
         { label: 'メモの編集…', icon: '🏷', disabled: root, onClick: () => EditNotes.showV(r) },
         { label: 'プロパティ', icon: 'ℹ', onClick: () => Props.show(r) },
@@ -1644,12 +1709,13 @@ Views.organize = {
       '-',
       { label: 'タグ / メモの編集…', icon: '🏷', onClick: () => EditNotes.show([r]) },
       ...(r.kind === 'file' ? [{ label: 'ファイルを開く', icon: '📂', key: 'ダブルクリック', onClick: () => openFile(r) }] : []),
+      Shortcut.item(r),
       { label: 'ツリーへ移動(現在の場所を表示)', icon: '🌳', onClick: () => this.reveal(r.id) },
       { label: 'プロパティ', icon: 'ℹ', onClick: () => Props.show(r) },
     ]);
   },
   async rename(r) {
-    if (r.kind === 'vdir') return VOps.rename(r);
+    if (r.kind === 'vdir' || r.kind === 'vlink') return VOps.rename(r);
     if (r.act !== 'move') return toast('名前変更は、移動を設定した項目にだけ設定できます', true);
     const name = prompt('移動後の名前(空欄で元の名前に戻す)', r.nn || r.node.n);
     if (name === null) return;
@@ -1735,7 +1801,7 @@ Views.organize = {
     if (i >= 0) { this.vt.focusKey('v:' + uuid); Sel.set(this.vt.selected(), this.vt); }
   },
   async drop(t, rows) {
-    const vdirs = rows.filter(r => r.kind === 'vdir'), nodes = rows.filter(r => r.kind !== 'vdir');
+    const vdirs = rows.filter(r => r.kind === 'vdir' || r.kind === 'vlink'), nodes = rows.filter(r => r.kind !== 'vdir' && r.kind !== 'vlink');
     for (const v of vdirs) {
       const r = await api('/api/vmove', { uuid: v.uuid, parent: t.uuid });
       showIssue(r.issue, 'フォルダの移動');

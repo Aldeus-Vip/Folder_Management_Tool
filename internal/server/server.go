@@ -133,6 +133,8 @@ func (a *App) Handler() http.Handler {
 		"GET /api/owners":    a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) { return s.Owners() }),
 		"GET /api/vwarnings": a.withStore(a.apiVWarnings),
 		"POST /api/vcreate":  a.withEdit(a.apiVCreate),
+		"POST /api/vlink":    a.withEdit(a.apiVLink),
+		"GET /api/vlocate":   a.withStore(a.apiVLocate),
 		"POST /api/vrename":  a.withEdit(a.apiVRename),
 		"POST /api/vmemo":    a.withEdit(a.apiVMemo),
 		"POST /api/vmove":    a.withEdit(a.apiVMove),

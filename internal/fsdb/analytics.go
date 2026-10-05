@@ -51,6 +51,13 @@ func (s *Store) Summary() (*Summary, error) {
 		s.mu.Unlock()
 	}
 	sm := *cached
+	// 5Sルール外れはアクションを変えるたびに変わるので、キャッシュせずに数え直す
+	sm.Checks = append([]Count{}, cached.Checks...)
+	for i := range sm.Checks {
+		if sm.Checks[i].Key == "rule5s" {
+			s.DB.QueryRow(`SELECT count(*), COALESCE(sum(CASE WHEN n.is_dir=0 THEN n.size ELSE 0 END),0) FROM rule_hits h JOIN nodes n ON n.id=h.node_id`).Scan(&sm.Checks[i].Count, &sm.Checks[i].Size)
+		}
+	}
 	var err error
 	if sm.Actions, err = s.counts(`SELECT p.action, p.action, count(*), 0 FROM plan p WHERE p.action!='' GROUP BY p.action ORDER BY count(*) DESC`); err != nil {
 		return nil, err

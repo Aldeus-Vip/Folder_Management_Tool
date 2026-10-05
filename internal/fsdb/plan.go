@@ -24,7 +24,7 @@ const planSchema = `
 CREATE TABLE IF NOT EXISTS vnodes(
   uuid TEXT PRIMARY KEY, parent TEXT NOT NULL DEFAULT '', name TEXT NOT NULL,
   memo TEXT NOT NULL DEFAULT '', editor TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '',
-  deleted INTEGER NOT NULL DEFAULT 0);
+  deleted INTEGER NOT NULL DEFAULT 0, link TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS plan(
   node_id INTEGER PRIMARY KEY, action TEXT NOT NULL DEFAULT '', vparent TEXT NOT NULL DEFAULT '',
   new_name TEXT NOT NULL DEFAULT '', due TEXT NOT NULL DEFAULT '', memo TEXT NOT NULL DEFAULT '',
@@ -43,13 +43,13 @@ func ensurePlanSchema(db *sql.DB) error {
 	if _, err := db.Exec(planSchema); err != nil {
 		return err
 	}
-	// 担当(owner)列の追加(旧バージョンのDB・作業用コピーの控え)
-	for _, t := range []string{"plan", "plan_base"} {
+	// 列の追加(旧バージョンのDB・作業用コピーの控え): 担当(owner)、ショートカットのリンク先(link)
+	for _, tc := range [][2]string{{"plan", "owner"}, {"plan_base", "owner"}, {"vnodes", "link"}, {"vnodes_base", "link"}} {
 		var has, col int
-		db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name=?`, t).Scan(&has)
-		db.QueryRow(`SELECT count(*) FROM pragma_table_info(?) WHERE name='owner'`, t).Scan(&col)
+		db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name=?`, tc[0]).Scan(&has)
+		db.QueryRow(`SELECT count(*) FROM pragma_table_info(?) WHERE name=?`, tc[0], tc[1]).Scan(&col)
 		if has > 0 && col == 0 {
-			if _, err := db.Exec(`ALTER TABLE ` + t + ` ADD COLUMN owner TEXT NOT NULL DEFAULT ''`); err != nil {
+			if _, err := db.Exec(`ALTER TABLE ` + tc[0] + ` ADD COLUMN ` + tc[1] + ` TEXT NOT NULL DEFAULT ''`); err != nil {
 				return err
 			}
 		}
@@ -350,6 +350,10 @@ func (s *Store) enrich(ns []Node) error {
 		if k := s.oidx.nearest(x.ID); k >= 0 {
 			x.IOwner = s.oidx.eff[k].join() // 実際の担当(親から引き継いだ段を含む)
 		}
+		if x.Action == ActMove && x.NewName != "" {
+			// 移動後の名前を設定した項目は、名前の警告(禁止文字・コピー名など)を移動後の名前で判定する
+			x.Flags = x.Flags&^nameFlagMask | NameFlags(x.NewName, x.IsDir)
+		}
 		x.Inner, x.InnerS = s.inner(x.ID, x.End, x.IsDir, x.Size)
 		if x.Action == "" && x.IAction == "" {
 			x.Rem, x.RemS = x.Inner, x.InnerS
@@ -439,8 +443,10 @@ func (s *Store) Progress() (*PlanProgress, error) {
 
 type vnode struct {
 	UUID, Parent, Name, Memo, Editor string
+	Link                             string // ショートカットのリンク先("v:<uuid>" / "n:<id>")。空 = 仮想フォルダ
 	Depth                            int
-	kids                             []*vnode
+	kids                             []*vnode // 配下の仮想フォルダ
+	links                            []*vnode // 直下のショートカット
 }
 
 type vtree struct {
@@ -482,14 +488,14 @@ func (s *Store) loadVTree() (*vtree, error) {
 	}
 	vt := &vtree{nodes: map[string]*vnode{VRoot: {UUID: VRoot, Name: r.RootName}}, rootName: r.RootName, base: r.BasePath, sep: sep}
 	s.rulesCache = r.compiled()
-	rows, err := s.DB.Query(`SELECT uuid, parent, name, memo, editor FROM vnodes WHERE deleted=0`)
+	rows, err := s.DB.Query(`SELECT uuid, parent, name, memo, editor, link FROM vnodes WHERE deleted=0`)
 	if err != nil {
 		return nil, err
 	}
 	var all []*vnode
 	for rows.Next() {
 		n := &vnode{}
-		if err := rows.Scan(&n.UUID, &n.Parent, &n.Name, &n.Memo, &n.Editor); err != nil {
+		if err := rows.Scan(&n.UUID, &n.Parent, &n.Name, &n.Memo, &n.Editor, &n.Link); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -499,16 +505,27 @@ func (s *Store) loadVTree() (*vtree, error) {
 	rows.Close()
 	for _, n := range all {
 		p := vt.nodes[n.Parent]
+		if p != nil && p.Link != "" {
+			p = nil // ショートカットの下には置けない(統合時の不整合など)
+		}
 		if p == nil {
 			p = vt.nodes[VRoot] // 親が無い(統合時の不整合など)→ルート直下に表示
 			n.Parent = VRoot
 		}
-		p.kids = append(p.kids, n)
+		if n.Link != "" {
+			p.links = append(p.links, n)
+		} else {
+			p.kids = append(p.kids, n)
+		}
 	}
 	var setDepth func(n *vnode, d int)
 	setDepth = func(n *vnode, d int) {
 		n.Depth = d
 		sort.Slice(n.kids, func(i, j int) bool { return strings.ToLower(n.kids[i].Name) < strings.ToLower(n.kids[j].Name) })
+		sort.Slice(n.links, func(i, j int) bool { return strings.ToLower(n.links[i].Name) < strings.ToLower(n.links[j].Name) })
+		for _, k := range n.links {
+			k.Depth = d + 1
+		}
 		for _, k := range n.kids {
 			setDepth(k, d+1)
 		}
@@ -532,6 +549,9 @@ func (s *Store) vSubtreeIDs(uuid string) []string {
 	var walk func(*vnode)
 	walk = func(v *vnode) {
 		out = append(out, v.UUID)
+		for _, k := range v.links {
+			out = append(out, k.UUID)
+		}
 		for _, k := range v.kids {
 			walk(k)
 		}
@@ -557,6 +577,10 @@ type VRow struct {
 	Similar []string `json:"sim,omitempty"`  // 同じ階層にある似た名前
 	Rule    []string `json:"rule,omitempty"` // 上位階層の命名・配置ルールの違反
 	Node    *Node    `json:"node,omitempty"`
+	// ショートカット(kind = vlink)
+	Link     string `json:"link,omitempty"`     // リンク先("v:<uuid>" / "n:<id>")
+	LinkPath string `json:"linkPath,omitempty"` // リンク先の表示用パス
+	Broken   string `json:"broken,omitempty"`   // リンク先が整理後の構成に無い理由
 }
 
 type vstat struct {
@@ -595,7 +619,7 @@ func (s *Store) vStats() map[string]*vstat {
 		}
 	}
 	for _, n := range vt.nodes {
-		get(n.UUID).direct += len(n.kids)
+		get(n.UUID).direct += len(n.kids) + len(n.links)
 	}
 	return st
 }
@@ -681,7 +705,11 @@ func (s *Store) VChildren(uuid string) ([]VRow, error) {
 		out = append(out, s.vfolderRow(k, st))
 		names = append(names, k.Name)
 	}
+	links := append([]*vnode{}, n.links...)
 	s.mu.Unlock()
+	for _, k := range links {
+		out = append(out, s.linkRow(k))
+	}
 	placed, err := s.query(`SELECT `+nodeCols+nodeFrom+` WHERE p.action='move' AND p.vparent=? ORDER BY n.is_dir DESC, lower(CASE WHEN p.new_name!='' THEN p.new_name ELSE n.name END)`, uuid)
 	if err != nil {
 		return nil, err
@@ -705,7 +733,7 @@ func (s *Store) VChildren(uuid string) ([]VRow, error) {
 	// 同じ階層の似た名前(フォルダ同士)。項目が多いときは、仮想フォルダが絡む組だけを調べる
 	var idx []int
 	for i := range out {
-		if out[i].Kind != "file" {
+		if out[i].Kind == "vdir" || out[i].Kind == "dir" {
 			idx = append(idx, i)
 		}
 	}

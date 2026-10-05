@@ -245,6 +245,31 @@ func (a *App) apiVCreate(r *http.Request, s *fsdb.Store, code string) (any, erro
 	return map[string]any{"uuid": id, "issue": is}, nil
 }
 
+// apiVLink は整理後の構成の中にショートカットを作る。
+func (a *App) apiVLink(r *http.Request, s *fsdb.Store, code string) (any, error) {
+	var q struct {
+		Parent string `json:"parent"`
+		Target string `json:"target"`
+		Name   string `json:"name"`
+	}
+	if err := decode(r, &q); err != nil {
+		return nil, err
+	}
+	id, err := s.VCreateLink(q.Parent, q.Target, q.Name, code)
+	if err != nil {
+		return nil, badRequest("%v", err)
+	}
+	return map[string]any{"uuid": id}, nil
+}
+
+func (a *App) apiVLocate(r *http.Request, s *fsdb.Store) (any, error) {
+	loc, err := s.VLocate(r.URL.Query().Get("target"))
+	if err != nil {
+		return nil, badRequest("%v", err)
+	}
+	return loc, nil
+}
+
 func (a *App) apiVRename(r *http.Request, s *fsdb.Store, code string) (any, error) {
 	var q vreq
 	if err := decode(r, &q); err != nil {
@@ -292,9 +317,10 @@ func (a *App) apiVDelete(r *http.Request, s *fsdb.Store, code string) (any, erro
 // ---- アクション・タグ ----
 
 type idsReq struct {
-	IDs    []int64  `json:"ids"`
-	Target string   `json:"target"`
-	Owner  []string `json:"owner"` // 担当(部 / 課 / 担当 / 担当者)
+	IDs     []int64  `json:"ids"`
+	Target  string   `json:"target"`
+	Owner   []string `json:"owner"`   // 担当(部 / 課 / 担当 / 担当者)
+	NewName string   `json:"newName"` // 移動と同時に設定する名前(1項目のみ)
 }
 
 func (a *App) apiPlanHold(r *http.Request, s *fsdb.Store, code string) (any, error) {
@@ -326,7 +352,7 @@ func (a *App) apiPlanMove(r *http.Request, s *fsdb.Store, code string) (any, err
 	if err := decode(r, &q); err != nil {
 		return nil, err
 	}
-	rep, err := s.PlanMove(q.IDs, q.Target, code)
+	rep, err := s.PlanMoveAs(q.IDs, q.Target, q.NewName, code)
 	if err != nil {
 		return nil, badRequest("%v", err)
 	}

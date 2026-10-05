@@ -224,6 +224,7 @@ func (s *Store) PlanHold(ids []int64, editor string) (*Report, error) {
 
 func (s *Store) planSimple(ids []int64, act, editor string) (*Report, error) {
 	rep := &Report{}
+	defer s.ruleHitsChanged(ids)
 	err := s.writePlans(func(tx *sql.Tx) error {
 		for _, id := range ids {
 			if _, err := tx.Exec(upsertPlan, id, act, "", "", editor, nowStr()); err != nil {
@@ -239,6 +240,7 @@ func (s *Store) planSimple(ids []int64, act, editor string) (*Report, error) {
 // PlanClear はアクションを解除する(メモ・期限は残す)。
 func (s *Store) PlanClear(ids []int64, editor string) (*Report, error) {
 	rep := &Report{}
+	defer s.ruleHitsChanged(ids)
 	err := s.writePlans(func(tx *sql.Tx) error {
 		for _, id := range ids {
 			r, err := tx.Exec(`UPDATE plan SET action='', vparent='', new_name='', editor=?, updated_at=? WHERE node_id=?`, editor, nowStr(), id)
@@ -255,6 +257,16 @@ func (s *Store) PlanClear(ids []int64, editor string) (*Report, error) {
 
 // PlanMove は仮想フォルダ target へ移動を設定する。5Sルールで禁止される項目は設定しない。
 func (s *Store) PlanMove(ids []int64, target, editor string) (*Report, error) {
+	return s.PlanMoveAs(ids, target, "", editor)
+}
+
+// PlanMoveAs は移動と同時に移動後の名前を設定する(1項目のみ。空なら名前は変えない)。
+// 5Sルールは移動後の名前で判定するので、ルールに合わない名前の項目も、名前を直せば移動できる。
+func (s *Store) PlanMoveAs(ids []int64, target, newName, editor string) (*Report, error) {
+	newName = strings.TrimSpace(newName)
+	if newName != "" && len(ids) != 1 {
+		return nil, fmt.Errorf("名前変更は1項目ずつ設定してください")
+	}
 	if err := s.ensureIndex(); err != nil {
 		return nil, err
 	}
@@ -268,7 +280,7 @@ func (s *Store) PlanMove(ids []int64, target, editor string) (*Report, error) {
 	var ok []*Node
 	s.mu.Lock()
 	tv := s.vt.nodes[target]
-	if tv == nil {
+	if tv == nil || tv.Link != "" {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("移動先の仮想フォルダが見つかりません")
 	}
@@ -284,6 +296,9 @@ func (s *Store) PlanMove(ids []int64, target, editor string) (*Report, error) {
 		if x.NewName != "" {
 			name = x.NewName
 		}
+		if newName != "" {
+			name = newName
+		}
 		is := s.checkPlace(r, rs, x, tv, name, adding)
 		rep.add(is)
 		if len(is.Blocks) == 0 {
@@ -291,11 +306,24 @@ func (s *Store) PlanMove(ids []int64, target, editor string) (*Report, error) {
 		}
 	}
 	s.mu.Unlock()
+	defer func() {
+		var moved []int64
+		for _, x := range ok {
+			moved = append(moved, x.ID)
+		}
+		s.ruleHitsChanged(moved)
+	}()
 	err = s.writePlans(func(tx *sql.Tx) error {
 		for _, x := range ok {
 			nn := ""
 			if x.Action == ActMove {
 				nn = x.NewName // 移動先を変えるだけなら名前変更は維持
+			}
+			if newName != "" {
+				nn = newName
+				if nn == x.Name {
+					nn = ""
+				}
 			}
 			if _, err := tx.Exec(upsertPlan, x.ID, ActMove, target, nn, editor, nowStr()); err != nil {
 				return err
@@ -342,6 +370,9 @@ func (s *Store) PlanSetFields(ids []int64, pf PlanFields, editor string) (*Repor
 			}
 		}
 		pf.NewName = &nn
+	}
+	if pf.NewName != nil {
+		defer s.ruleHitsChanged(ids) // 移動後の名前で判定し直す
 	}
 	err := s.writePlans(func(tx *sql.Tx) error {
 		for _, id := range ids {
@@ -445,7 +476,7 @@ func (s *Store) VCreate(parent, name, editor string) (string, *Issue, error) {
 	name = strings.TrimSpace(name)
 	s.mu.Lock()
 	p := s.vt.nodes[parent]
-	if p == nil {
+	if p == nil || p.Link != "" {
 		s.mu.Unlock()
 		return "", nil, fmt.Errorf("親の仮想フォルダが見つかりません")
 	}
@@ -481,7 +512,12 @@ func (s *Store) VRename(uuid, name, editor string) (*Issue, error) {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("仮想フォルダが見つかりません")
 	}
-	is := s.vfolderIssue(s.Rules(), s.vt.nodes[n.Parent], name, uuid)
+	var is Issue
+	if n.Link == "" {
+		is = s.vfolderIssue(s.Rules(), s.vt.nodes[n.Parent], name, uuid)
+	} else if name == "" { // ショートカットは名前だけ確認(実際のファイルではないため5Sルールは対象外)
+		is.Blocks = append(is.Blocks, "名前が空です")
+	}
 	s.mu.Unlock()
 	if len(is.Blocks) > 0 {
 		return &is, nil
@@ -506,9 +542,17 @@ func (s *Store) VMove(uuid, parent, editor string) (*Issue, error) {
 	}
 	s.mu.Lock()
 	n, p := s.vt.nodes[uuid], s.vt.nodes[parent]
-	if n == nil || p == nil || uuid == VRoot {
+	if n == nil || p == nil || uuid == VRoot || p.Link != "" {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("仮想フォルダが見つかりません")
+	}
+	if n.Link != "" { // ショートカットはそのまま移す
+		s.mu.Unlock()
+		if _, err := s.DB.Exec(`UPDATE vnodes SET parent=?, editor=?, updated_at=? WHERE uuid=?`, parent, editor, nowStr(), uuid); err != nil {
+			return nil, err
+		}
+		s.invalidate()
+		return &Issue{}, nil
 	}
 	for a := p; a != nil; a = s.vt.nodes[a.Parent] {
 		if a.UUID == uuid {
@@ -587,6 +631,7 @@ func (s *Store) VMove(uuid, parent, editor string) (*Issue, error) {
 		return nil, err
 	}
 	s.invalidate()
+	s.ruleHitsChanged(s.placedUnder(uuid)) // 置いた項目の整理後の階層が変わる
 	return &is, nil
 }
 
@@ -600,6 +645,7 @@ func (s *Store) VDelete(uuid, editor string) (int, error) {
 		return 0, fmt.Errorf("仮想フォルダが見つかりません")
 	}
 	cleared := 0
+	defer s.ruleHitsChanged(s.placedUnder(uuid)) // 移動が解除される項目(defer の引数は先に評価される)
 	err := s.writePlans(func(tx *sql.Tx) error {
 		for _, id := range ids {
 			r, err := tx.Exec(`UPDATE plan SET action='', vparent='', new_name='', editor=?, updated_at=? WHERE action='move' AND vparent=?`, editor, nowStr(), id)
