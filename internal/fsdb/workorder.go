@@ -202,3 +202,116 @@ func (s *Store) WriteTargetStructure(w io.Writer) error {
 	cw.Flush()
 	return cw.Error()
 }
+
+// ---- 移行量の見積もり ----
+// Step1: SharePoint へ移行済みの分(初動移行の拡張子)を、SharePoint 上で新構成へ移動・削除する(PnP)
+// Step2: ファイルサーバーにしか無い分(それ以外の拡張子)を、新構成へ移行する(SPMT など)
+
+// ActionAmount はアクション別のファイル数・サイズ。
+type ActionAmount struct {
+	Move    int64 `json:"move"` // ファイル数
+	Delete  int64 `json:"delete"`
+	Hold    int64 `json:"hold"`
+	None    int64 `json:"none"`  // 未処理
+	MoveS   int64 `json:"moveS"` // サイズ
+	DeleteS int64 `json:"deleteS"`
+	HoldS   int64 `json:"holdS"`
+	NoneS   int64 `json:"noneS"`
+}
+
+func (a *ActionAmount) add(act string, size int64) {
+	switch act {
+	case ActMove:
+		a.Move++
+		a.MoveS += size
+	case ActDelete:
+		a.Delete++
+		a.DeleteS += size
+	case ActHold:
+		a.Hold++
+		a.HoldS += size
+	default:
+		a.None++
+		a.NoneS += size
+	}
+}
+
+type MigrationEstimate struct {
+	Exts    []string     `json:"exts"`
+	Step1   ActionAmount `json:"step1"`   // SharePoint 側(移行済みの拡張子)
+	Step2   ActionAmount `json:"step2"`   // ファイルサーバー側(それ以外の拡張子)
+	Folders int          `json:"folders"` // Step2 で移動するファイルがあるフォルダの数(散らばり具合)
+	Tasks   int          `json:"tasks"`   // Step2 の移行単位(移動を設定した項目)の数 ≒ SPMT のタスク数の目安
+	Ops1    int          `json:"ops1"`    // Step1 の操作の数(移行済みのファイルを含む、移動・削除を設定した項目)
+	TopExts []Count      `json:"topExts"` // Step2 で移動するファイルの拡張子(サイズ順)
+}
+
+// EstimateMigration はファイルを1件ずつ、拡張子(初動移行の対象か)と及んでいるアクションで振り分けて数える。
+func (s *Store) EstimateMigration() (*MigrationEstimate, error) {
+	if err := s.ensureIndex(); err != nil {
+		return nil, err
+	}
+	me := &MigrationEstimate{Exts: s.MigratedExts()}
+	exts := map[string]bool{}
+	for _, e := range me.Exts {
+		exts[e] = true
+	}
+	if exts["(なし)"] {
+		exts[""] = true
+	}
+	rows, err := s.DB.Query(`SELECT id, COALESCE(parent_id,0), ext, size FROM nodes WHERE is_dir=0`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	s.mu.Lock()
+	pi := s.pidx
+	s.mu.Unlock()
+	folders := map[int64]bool{}
+	tasks := map[int64]bool{}
+	ops1 := map[int64]bool{}
+	byExt := map[string]*Count{}
+	for rows.Next() {
+		var id, parent, size int64
+		var ext string
+		if err := rows.Scan(&id, &parent, &ext, &size); err != nil {
+			return nil, err
+		}
+		act, from := "", int64(0)
+		if k := pi.nearest(id); k >= 0 {
+			act, from = pi.acts[k], pi.ids[k]
+		}
+		if exts[strings.ToLower(ext)] {
+			me.Step1.add(act, size)
+			if act == ActMove || act == ActDelete {
+				ops1[from] = true
+			}
+			continue
+		}
+		me.Step2.add(act, size)
+		if act == ActMove {
+			folders[parent] = true
+			tasks[from] = true
+			c := byExt[ext]
+			if c == nil {
+				c = &Count{Key: ext, Label: ext}
+				if ext == "" {
+					c.Label = "(拡張子なし)"
+				}
+				byExt[ext] = c
+			}
+			c.Count++
+			c.Size += size
+		}
+	}
+	me.Folders, me.Tasks, me.Ops1 = len(folders), len(tasks), len(ops1)
+	me.TopExts = []Count{}
+	for _, c := range byExt {
+		me.TopExts = append(me.TopExts, *c)
+	}
+	sort.Slice(me.TopExts, func(i, j int) bool { return me.TopExts[i].Size > me.TopExts[j].Size })
+	if len(me.TopExts) > 10 {
+		me.TopExts = me.TopExts[:10]
+	}
+	return me, rows.Err()
+}

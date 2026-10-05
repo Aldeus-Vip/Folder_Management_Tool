@@ -130,7 +130,8 @@ func (a *App) Handler() http.Handler {
 		"GET /api/rulehits": a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) {
 			return map[string]int64{"count": s.RuleHitCount()}, nil
 		}),
-		"GET /api/migexts": a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) { return s.MigratedExts(), nil }),
+		"GET /api/migestimate": a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) { return s.EstimateMigration() }),
+		"GET /api/migexts":     a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) { return s.MigratedExts(), nil }),
 		"POST /api/migexts": a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) {
 			var q struct {
 				Exts string `json:"exts"`

@@ -72,7 +72,8 @@ func TestBigPlan(t *testing.T) {
 	s.PlanMove(ids[700:800], v, "x")
 	t.Logf("move 100 folders with rule hits refresh: %v", time.Since(t0))
 	for name, fn := range map[string]func() error{
-		"RuleViolations": func() error { _, err := s.RuleViolations(); return err },
+		"RuleViolations":    func() error { _, err := s.RuleViolations(); return err },
+		"EstimateMigration": func() error { s.SetMigratedExts("xlsx"); _, err := s.EstimateMigration(); return err },
 		"Filter owner": func() error {
 			tf, _ := s.TreeFilterFor("2:担当A", "")
 			_, err := s.Children(1, false, false, tf)

@@ -856,3 +856,28 @@ func TestWorkOrder(t *testing.T) {
 		t.Fatalf("target structure: %q", ts.String())
 	}
 }
+
+// 移行量の見積もり(Step1: 移行済みの拡張子 / Step2: それ以外)
+func TestMigrationEstimate(t *testing.T) {
+	s, ids := testDB(t)
+	v, _, _ := s.VCreate(VRoot, "010_経理", "x")
+	s.PlanMove([]int64{ids["経理"]}, v, "x")     // pdf×2, xlsx, txt
+	s.PlanDelete([]int64{ids[`経理\2024`]}, "x") // その中の pdf を削除
+	s.PlanHold([]int64{ids["総務"]}, "x")        // docx, txt
+	s.SetMigratedExts("pdf, DOCX")
+	e, err := s.EstimateMigration()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Step1(pdf・docx): 移動 1(2023\請求書.pdf)、削除 1(2024\請求書.pdf)、保留 1(規程.docx)
+	if e.Step1.Move != 1 || e.Step1.Delete != 1 || e.Step1.Hold != 1 || e.Step1.None != 0 || e.Ops1 != 2 {
+		t.Fatalf("step1: %+v ops=%d", e.Step1, e.Ops1)
+	}
+	// Step2: 移動 2(見積.xlsx・メモ.txt)、保留 1(a.txt)、未処理 1(readme.txt)
+	if e.Step2.Move != 2 || e.Step2.Hold != 1 || e.Step2.None != 1 || e.Step2.MoveS != 2048 {
+		t.Fatalf("step2: %+v", e.Step2)
+	}
+	if e.Folders != 2 || e.Tasks != 1 || len(e.TopExts) != 2 {
+		t.Fatalf("folders=%d tasks=%d exts=%+v", e.Folders, e.Tasks, e.TopExts)
+	}
+}
