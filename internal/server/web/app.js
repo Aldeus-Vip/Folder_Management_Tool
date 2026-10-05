@@ -1256,7 +1256,7 @@ const Options = {
           <label class="inl"><input type="checkbox" id="ru-apply" ${ru.applyCurrent ? 'checked' : ''}> 現在のフォルダ構成にもルールを当てはめる</label>
           <div class="form" style="grid-template-columns:320px 80px 1fr;margin-top:6px">
             <span>現在のルート(スキャンしたフォルダ)の階層</span><input type="number" id="ru-offset" value="${ru.currentOffset || 0}" min="0" max="20">
-            <span class="hint">整理後の構成の第何階層に当たるか。例: 整理後のルート=「整備本部」、スキャンしたフォルダ=「125_整備業務部」なら 1</span>
+            <span class="hint">整理後の構成の第何階層に当たるか。例: 整理後のルート=「本社」、スキャンしたフォルダ=「100_営業部」なら 1</span>
           </div>
           <p class="hint">当てはめるルール: 最大階層・直下の項目数・禁止文字・コピー/版管理的な名前・カスタムルール(禁止/警告のどちらも)。<br>保存時に全項目を判定し直します(大規模なDBでは数秒かかります)。</p>
         </div>
@@ -1945,7 +1945,7 @@ Views.list = {
     modal(`<h2>検索結果すべてに一括操作</h2><p class="hint">現在の検索結果(${esc(n)})のすべての項目に適用します。</p>
       <div class="form" style="grid-template-columns:150px 300px">
         <span>操作</span><select id="bk-op"><option value="delete">削除を設定</option><option value="move">移動を設定(移動先を選択)</option><option value="hold">保留を設定</option><option value="clear">アクションを解除</option><option value="tag">タグを追加</option><option value="owner">担当を設定</option></select>
-        <span>タグ / 担当</span><input type="text" id="bk-tag" list="taglist" placeholder="タグ、または担当「部/課/担当/担当者」(空欄可。例: 整備業務部/業務推進課//山田)"></div>`,
+        <span>タグ / 担当</span><input type="text" id="bk-tag" list="taglist" placeholder="タグ、または担当「部/課/担当/担当者」(空欄可。例: 営業部/第一課//山田)"></div>`,
       async m => {
         const op = $('#bk-op', m).value, tag = $('#bk-tag', m).value.trim();
         if ((op === 'tag' || op === 'owner') && !tag) { toast(op === 'tag' ? 'タグを入力してください' : '担当を入力してください', true); return false; }
