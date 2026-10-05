@@ -7,6 +7,7 @@
 - インストール不要の **単一exe**(Python・Office 不要)。起動するとブラウザで画面が開きます(黒いウィンドウは出ません)
 - PC内だけで動作し、外部には通信しません
 - 終了: 画面右上の「⏻ 終了」、またはブラウザのタブを閉じると自動で終了します
+- 社員向けの説明: [はじめにお読みください](docs/はじめにお読みください.txt) / 変更履歴: [RELEASE_NOTES.md](RELEASE_NOTES.md)
 
 ## 使い方の流れ
 
@@ -172,5 +173,7 @@ GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui" -o d
 | `internal/fsdb` | DB構築・検索・整理計画(アクション/仮想フォルダ/タグ/5Sルール)・複数人の統合・出力 |
 | `internal/osutil` | Windowsのファイル/フォルダ選択ダイアログ(エクスプローラー形式)など |
 | `internal/server` | JSON API と画面(`web/`) |
+
+リリース: `v` で始まるタグ(例: `v1.0.0`)を push すると、`.github/workflows/release.yml` が配布用 zip(exe・はじめにお読みください.txt・RELEASE_NOTES.md)を作って GitHub Release を作成します。変更点は `RELEASE_NOTES.md` に追記してください。
 
 起動オプション: `FolderManager.exe [-port 8765] [-projects フォルダ] [-idle 3m] [-no-browser] [開くDB]`

@@ -1043,6 +1043,7 @@ function show(name, arg) {
 
 async function refreshState() {
   S.state = await api('/api/state');
+  $('#brand').title = 'FolderManager ' + (S.state.version || '');
   S.checks = S.state.checks;
   const db = S.state.db;
   S.settings = db?.settings || null;
@@ -1200,6 +1201,7 @@ const Options = {
       <div class="tabpane" data-pane="general">
         <div class="optsec"><h3>テーマ</h3><span class="seg" id="op-theme">${[['auto', '🌓 自動'], ['light', '☀ ライト'], ['dark', '🌙 ダーク']].map(([k, l]) => `<button data-t="${k}" class="${t === k ? 'on' : ''}">${l}</button>`).join('')}</span>
           <span class="hint">「自動」はWindowsの設定に従います</span></div>
+        <div class="optsec"><h3>バージョン</h3>FolderManager ${esc(S.state?.version || '')}</div>
         ${db ? '' : '<p class="hint">DBを開くと、DBの情報と判定ルールを設定できます。</p>'}
       </div>
       ${db ? `<div class="tabpane" data-pane="db">
