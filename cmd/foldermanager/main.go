@@ -18,7 +18,8 @@ import (
 	"github.com/aldeus-vip/folder_management_tool/internal/server"
 )
 
-var version = "0.1.0"
+// version はリリース時に -ldflags "-X main.version=1.0.0" で埋め込む
+var version = "1.0.0"
 
 func main() {
 	port := flag.Int("port", 8765, "待ち受けポート(使用中なら空きポートを自動選択)")
