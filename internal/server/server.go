@@ -130,6 +130,20 @@ func (a *App) Handler() http.Handler {
 		"GET /api/rulehits": a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) {
 			return map[string]int64{"count": s.RuleHitCount()}, nil
 		}),
+		"GET /api/migestimate": a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) { return s.EstimateMigration() }),
+		"GET /api/migexts":     a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) { return s.MigratedExts(), nil }),
+		"POST /api/migexts": a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) {
+			var q struct {
+				Exts string `json:"exts"`
+			}
+			if err := decode(r, &q); err != nil {
+				return nil, err
+			}
+			if err := s.SetMigratedExts(q.Exts); err != nil {
+				return nil, err
+			}
+			return s.MigratedExts(), nil
+		}),
 		"GET /api/owners":    a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) { return s.Owners() }),
 		"GET /api/vwarnings": a.withStore(a.apiVWarnings),
 		"POST /api/vcreate":  a.withEdit(a.apiVCreate),
@@ -157,6 +171,8 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/export/list.csv", a.download(func(w io.Writer, r *http.Request, s *fsdb.Store) error {
 		return s.WriteCSV(w, fsdb.FilterFromQuery(r.URL.Query()))
 	}))
+	mux.HandleFunc("GET /api/export/workorder.csv", a.download(func(w io.Writer, r *http.Request, s *fsdb.Store) error { return s.WriteWorkOrder(w) }))
+	mux.HandleFunc("GET /api/export/target_structure.csv", a.download(func(w io.Writer, r *http.Request, s *fsdb.Store) error { return s.WriteTargetStructure(w) }))
 	mux.HandleFunc("GET /api/export/plan.ps1", a.download(func(w io.Writer, r *http.Request, s *fsdb.Store) error {
 		return s.WritePlanScript(w, func(p string) string { return a.localPath(s, p) })
 	}))

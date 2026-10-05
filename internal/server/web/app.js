@@ -632,6 +632,29 @@ const VPicker = {
   },
 };
 
+// 移行量の見積もり(Step1: SharePoint 上で整理 / Step2: 残りをファイルサーバーから移行)
+function migrationEstimateHTML(e) {
+  const cell = (n, sz) => `<td class="num">${fmtNum(n)}</td><td class="num muted">${fmtSize(sz)}</td>`;
+  const row = (label, a) => `<tr><td>${label}</td>${cell(a.move, a.moveS)}${cell(a.delete, a.deleteS)}${cell(a.hold, a.holdS)}${cell(a.none, a.noneS)}</tr>`;
+  const s2 = e.step2;
+  const scale = s2.move + s2.none;
+  const advice = scale === 0 ? '移行が必要なファイルはありません。'
+    : s2.move < 1000 && s2.moveS < 5 * 1024 ** 3 && e.folders < 50 ? '少量です。ブラウザからのアップロードでも対応できます(ただし更新日時・作成者はアップロード時のものになります)。'
+    : 'SPMT(SharePoint Migration Tool)での移行を推奨します(量が多い・フォルダが分散している)。';
+  return `<h3 style="margin-top:12px">移行量の見積もり ${e.exts.length ? '' : '<span class="b mig">拡張子リストが未入力のため、すべて Step2 として集計しています</span>'}</h3>
+    <table class="t"><tr><th></th><th class="num" colspan="2">移動</th><th class="num" colspan="2">削除</th><th class="num" colspan="2">保留</th><th class="num" colspan="2">未処理</th></tr>
+      ${row('<b>Step1</b> SharePoint 上で整理<br><span class="muted">(移行済みの拡張子)</span>', e.step1)}
+      ${row('<b>Step2</b> 残りを移行<br><span class="muted">(ファイルサーバーにのみ)</span>', s2)}</table>
+    <ul class="hint" style="margin:6px 0 0 18px;padding:0">
+      <li><b>Step1</b>: SharePoint 上での操作の数(移動・削除を設定した項目)は <b>${fmtNum(e.ops1)}</b> 件です(PnP スクリプトで実行)。</li>
+      <li><b>Step2</b>: 移行が必要なのは「移動」の <b>${fmtNum(s2.move)}</b> ファイル(${fmtSize(s2.moveS)})です。
+        ${fmtNum(e.folders)} フォルダに分散していて、移行の単位(移動を設定した項目)は ${fmtNum(e.tasks)} 件です。</li>
+      ${s2.none ? `<li>Step2 の「未処理」${fmtNum(s2.none)} ファイル(${fmtSize(s2.noneS)})は、判断が終わるまで移行されません(現状の構成で移行するかは方針次第)。</li>` : ''}
+      ${s2.delete ? `<li>Step2 の「削除」${fmtNum(s2.delete)} ファイルは移行しないだけで済みます(ファイルサーバー上で削除する必要はありません)。</li>` : ''}
+      <li><b>${advice}</b></li></ul>
+    ${e.topExts.length ? `<p class="hint" style="margin-top:6px">Step2 で移動するファイルの拡張子(サイズ順): ${e.topExts.map(x => `${esc(x.label)} ${fmtNum(x.count)}件・${fmtSize(x.size)}`).join(' / ')}</p>` : ''}`;
+}
+
 // ===== 作業者コード(誰の変更かを記録する。複数人で編集するときの統合に使う) =====
 const CodeGate = {
   prompt() {
@@ -2073,7 +2096,31 @@ Views.plan = {
       this.grid.setEmpty('アクションはまだありません');
       $('#pl-state').onchange = $('#pl-editor').onchange = $('#pl-tag').onchange = $('#pl-owner').onchange = guard(() => this.load());
       $('#pl-csv').onclick = () => download('/api/export/list.csv', this.params());
-      $('#pl-ps1').onclick = () => modal(`<h2>PowerShell実行スクリプトの出力</h2><p class="hint">整理後のフォルダ構成を作成し、「削除」「移動(名前変更を含む)」を実行するスクリプト(.ps1)を出力します。<br>
+      $('#pl-wo').onclick = guard(async () => {
+        const exts = await api('/api/migexts');
+        const m = modal(`<h2>作業指示CSVの出力</h2>
+          <p class="hint">判断結果を<b>作業指示CSV</b>(実行の正本)として出力します。承認(Approval 列)は Pending で出力するので、レビュー後に Approved に変えてください。<br>
+          ・行は子→親の実行順(ExecOrder)です。親フォルダの削除に含まれる配下の削除は省略し、配下の移動は残します(先に移動してから削除)。<br>
+          ・<b>Location</b>: ファイルは下の拡張子リストで判定(含まれれば SharePoint、それ以外は FileServer)、フォルダは Both。移行ログによる補正は別途行ってください。<br>
+          ・Note 列: 配下に保留がある削除、SharePoint で使えない文字・400文字超のパス、アクセスできなかった項目などの注意。</p>
+          <h3>初動移行(SharePoint へ移行済み)の拡張子</h3>
+          <textarea id="wo-exts" style="width:100%;height:70px" placeholder="例: docx, xlsx, pptx, pdf(「,」・空白・改行区切り。大文字/小文字は区別しません)">${esc(exts.join(', '))}</textarea>
+          <div class="btns" style="margin-top:8px"><button data-est>📊 移行量を見積もる</button><button data-ts>新構成フォルダ一覧(target_structure.csv)</button></div>
+          <div id="wo-est"></div>`,
+          async mm => {
+            await api('/api/migexts', { exts: $('#wo-exts', mm).value });
+            download('/api/export/workorder.csv');
+          }, '作業指示CSVをダウンロード');
+        $('[data-ts]', m).onclick = () => download('/api/export/target_structure.csv');
+        $('[data-est]', m).onclick = guard(async () => {
+          await api('/api/migexts', { exts: $('#wo-exts', m).value });
+          $('#wo-est', m).innerHTML = '<p class="muted">集計中…(大規模なDBでは数秒かかります)</p>';
+          $('#wo-est', m).innerHTML = migrationEstimateHTML(await api('/api/migestimate'));
+        });
+      });
+      $('#pl-ps1').onclick = () => modal(`<h2>PowerShell実行スクリプト(簡易)の出力</h2><p class="hint"><b>ファイルサーバーだけ</b>を対象に、整理後のフォルダ構成を作成し「削除」「移動(名前変更を含む)」を実行するスクリプト(.ps1)を出力します。<br>
+        ・SharePoint へ移行済みのファイルは操作できません。移行と組み合わせる場合は「作業指示CSV」を使ってください。<br>
+        ・Windows PowerShell 5.1 では別ドライブへのフォルダ移動ができません(PowerShell 7 で実行してください)。<br>
         ・<b>既定はドライラン</b>です。そのまま実行しても何も変更せず、実行予定をログCSVに書き出します。<br>
         ・内容を確認後、<code>-Execute</code> を付けて実行すると実際に変更します。<br>
         ・整理後のルートの場所は「⚙ オプション」で設定、または <code>-TargetRoot "\\\\srv\\share\\整理後"</code> で指定できます。<br>
