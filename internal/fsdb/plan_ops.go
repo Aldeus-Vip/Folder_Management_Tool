@@ -268,7 +268,7 @@ func (s *Store) PlanMove(ids []int64, target, editor string) (*Report, error) {
 	var ok []*Node
 	s.mu.Lock()
 	tv := s.vt.nodes[target]
-	if tv == nil {
+	if tv == nil || tv.Link != "" {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("移動先の仮想フォルダが見つかりません")
 	}
@@ -445,7 +445,7 @@ func (s *Store) VCreate(parent, name, editor string) (string, *Issue, error) {
 	name = strings.TrimSpace(name)
 	s.mu.Lock()
 	p := s.vt.nodes[parent]
-	if p == nil {
+	if p == nil || p.Link != "" {
 		s.mu.Unlock()
 		return "", nil, fmt.Errorf("親の仮想フォルダが見つかりません")
 	}
@@ -481,7 +481,12 @@ func (s *Store) VRename(uuid, name, editor string) (*Issue, error) {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("仮想フォルダが見つかりません")
 	}
-	is := s.vfolderIssue(s.Rules(), s.vt.nodes[n.Parent], name, uuid)
+	var is Issue
+	if n.Link == "" {
+		is = s.vfolderIssue(s.Rules(), s.vt.nodes[n.Parent], name, uuid)
+	} else if name == "" { // ショートカットは名前だけ確認(実際のファイルではないため5Sルールは対象外)
+		is.Blocks = append(is.Blocks, "名前が空です")
+	}
 	s.mu.Unlock()
 	if len(is.Blocks) > 0 {
 		return &is, nil
@@ -506,9 +511,17 @@ func (s *Store) VMove(uuid, parent, editor string) (*Issue, error) {
 	}
 	s.mu.Lock()
 	n, p := s.vt.nodes[uuid], s.vt.nodes[parent]
-	if n == nil || p == nil || uuid == VRoot {
+	if n == nil || p == nil || uuid == VRoot || p.Link != "" {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("仮想フォルダが見つかりません")
+	}
+	if n.Link != "" { // ショートカットはそのまま移す
+		s.mu.Unlock()
+		if _, err := s.DB.Exec(`UPDATE vnodes SET parent=?, editor=?, updated_at=? WHERE uuid=?`, parent, editor, nowStr(), uuid); err != nil {
+			return nil, err
+		}
+		s.invalidate()
+		return &Issue{}, nil
 	}
 	for a := p; a != nil; a = s.vt.nodes[a.Parent] {
 		if a.UUID == uuid {

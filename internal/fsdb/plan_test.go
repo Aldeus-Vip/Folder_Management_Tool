@@ -2,6 +2,7 @@ package fsdb
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -626,5 +627,91 @@ func TestRuleHits(t *testing.T) {
 	s.SaveRules(r)
 	if n := s.RuleHitCount(); n != 0 {
 		t.Fatalf("off hits=%d", n)
+	}
+}
+
+// 整理後の構成の中のショートカット
+func TestShortcut(t *testing.T) {
+	s, ids := testDB(t)
+	a, _, _ := s.VCreate(VRoot, "010_経理", "x")
+	b, _, _ := s.VCreate(VRoot, "020_総務", "x")
+	s.PlanMove([]int64{ids["経理"]}, a, "x")
+	target := fmt.Sprintf("n:%d", ids[`経理\2023\請求書.pdf`])
+	l1, err := s.VCreateLink(b, target, "請求書 - ショートカット", "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l2, _ := s.VCreateLink(b, "v:"+a, "経理へ", "x")
+	if _, err := s.VCreateLink(l1, "v:"+a, "x", "x"); err == nil {
+		t.Fatal("link under link")
+	}
+	rows, _ := s.VChildren(b)
+	var links int
+	for _, r := range rows {
+		if r.Kind == "vlink" {
+			links++
+			if r.Broken != "" || r.LinkPath == "" {
+				t.Fatalf("link row: %+v", r)
+			}
+		}
+	}
+	if links != 2 {
+		t.Fatalf("rows: %+v", rows)
+	}
+	loc, err := s.VLocate(target)
+	if err != nil || loc.VFolder != a || loc.Placed != ids["経理"] || len(loc.Path) != 1 || loc.Path[0] != ids[`経理\2023`] {
+		t.Fatalf("locate: %+v %v", loc, err)
+	}
+	// ショートカットへは移動できない。ショートカットは名前変更・移動できる
+	if _, err := s.PlanMove([]int64{ids["readme.txt"]}, l2, "x"); err == nil {
+		t.Fatal("move into link")
+	}
+	if is, err := s.VRename(l2, "経理(ショートカット)", "x"); err != nil || len(is.Blocks) > 0 {
+		t.Fatalf("rename: %+v %v", is, err)
+	}
+	if _, err := s.VMove(l2, a, "x"); err != nil {
+		t.Fatal(err)
+	}
+	// 統合でも残る
+	cp := filepath.Join(t.TempDir(), "c.db")
+	s.WorkCopy(cp, "山田")
+	c, _ := Open(cp)
+	l3, _ := c.VCreateLink(b, "v:"+b, "総務へ", "山田")
+	c.Close()
+	ma, err := AnalyzeActionMerge([]string{cp}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "m.db")
+	if _, err := ma.Apply(out, map[string]int{}); err != nil {
+		t.Fatal(err)
+	}
+	ma.Close()
+	m, _ := Open(out)
+	defer m.Close()
+	if loc, err := m.VLocate("v:" + b); err != nil || loc.VFolder != b {
+		t.Fatal("merged target")
+	}
+	if rows, _ := m.VChildren(b); !func() bool {
+		for _, r := range rows {
+			if r.UUID == l3 && r.Kind == "vlink" {
+				return true
+			}
+		}
+		return false
+	}() {
+		t.Fatalf("merged link missing: %+v", rows)
+	}
+	// リンク先が無くなった場合
+	s.PlanClear([]int64{ids["経理"]}, "x")
+	if loc, _ := s.VLocate(target); loc.Left != ids[`経理\2023\請求書.pdf`] {
+		t.Fatalf("left: %+v", loc)
+	}
+	s.VDelete(a, "x") // l2 は a の中にあるので一緒に削除される
+	if _, err := s.VLocate("v:" + a); err == nil {
+		t.Fatal("deleted folder")
+	}
+	if rows, _ := s.VChildren(b); len(rows) != 1 || rows[0].Broken == "" {
+		t.Fatalf("broken: %+v", rows)
 	}
 }

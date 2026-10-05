@@ -245,6 +245,31 @@ func (a *App) apiVCreate(r *http.Request, s *fsdb.Store, code string) (any, erro
 	return map[string]any{"uuid": id, "issue": is}, nil
 }
 
+// apiVLink は整理後の構成の中にショートカットを作る。
+func (a *App) apiVLink(r *http.Request, s *fsdb.Store, code string) (any, error) {
+	var q struct {
+		Parent string `json:"parent"`
+		Target string `json:"target"`
+		Name   string `json:"name"`
+	}
+	if err := decode(r, &q); err != nil {
+		return nil, err
+	}
+	id, err := s.VCreateLink(q.Parent, q.Target, q.Name, code)
+	if err != nil {
+		return nil, badRequest("%v", err)
+	}
+	return map[string]any{"uuid": id}, nil
+}
+
+func (a *App) apiVLocate(r *http.Request, s *fsdb.Store) (any, error) {
+	loc, err := s.VLocate(r.URL.Query().Get("target"))
+	if err != nil {
+		return nil, badRequest("%v", err)
+	}
+	return loc, nil
+}
+
 func (a *App) apiVRename(r *http.Request, s *fsdb.Store, code string) (any, error) {
 	var q vreq
 	if err := decode(r, &q); err != nil {
