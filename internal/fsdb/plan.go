@@ -350,6 +350,10 @@ func (s *Store) enrich(ns []Node) error {
 		if k := s.oidx.nearest(x.ID); k >= 0 {
 			x.IOwner = s.oidx.eff[k].join() // 実際の担当(親から引き継いだ段を含む)
 		}
+		if x.Action == ActMove && x.NewName != "" {
+			// 移動後の名前を設定した項目は、名前の警告(禁止文字・コピー名など)を移動後の名前で判定する
+			x.Flags = x.Flags&^nameFlagMask | NameFlags(x.NewName, x.IsDir)
+		}
 		x.Inner, x.InnerS = s.inner(x.ID, x.End, x.IsDir, x.Size)
 		if x.Action == "" && x.IAction == "" {
 			x.Rem, x.RemS = x.Inner, x.InnerS

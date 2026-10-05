@@ -68,6 +68,9 @@ func TestBigPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("rule hits (apply to current tree): %v (%d hits)", time.Since(t0), s.RuleHitCount())
+	t0 = time.Now()
+	s.PlanMove(ids[700:800], v, "x")
+	t.Logf("move 100 folders with rule hits refresh: %v", time.Since(t0))
 	for name, fn := range map[string]func() error{
 		"RuleViolations": func() error { _, err := s.RuleViolations(); return err },
 		"Filter owner": func() error {

@@ -617,6 +617,59 @@ func TestRuleHits(t *testing.T) {
 	if kids, _ := s.Children(ids["経理"], false, false, tf); len(kids) != 0 {
 		t.Fatalf("children of violating folder: %+v", kids)
 	}
+	// 整理後の状態で判定: 移動して名前を直せば消える、削除を設定すれば消える、解除すれば戻る
+	hit := func(name string) bool { return node(t, s, ids[name]).RuleMsg != "" }
+	// 禁止のルールでも、移動と同時に名前を直せば移動できる
+	if rep, _ := s.PlanMove([]int64{ids["総務"]}, VRoot, "x"); rep.Applied != 0 {
+		t.Fatal("blocked without rename")
+	}
+	if rep, _ := s.PlanMoveAs([]int64{ids["総務"]}, VRoot, "020_総務", "x"); rep.Applied != 1 || hit("総務") {
+		t.Fatalf("move with rename: %+v", rep)
+	}
+	s.PlanClear([]int64{ids["総務"]}, "x")
+	r.Custom = topRules(1, "warn") // 警告のみ: 先に移動してから名前を直す
+	s.SaveRules(r)
+	s.PlanMove([]int64{ids["経理"]}, VRoot, "x")
+	if !hit("経理") {
+		t.Fatal("moved without rename should still violate")
+	}
+	if rep, err := s.PlanSetFields([]int64{ids["経理"]}, PlanFields{NewName: ptr("010_経理")}, "x"); err != nil || len(rep.Issues) > 0 {
+		t.Fatalf("rename: %+v %v", rep, err)
+	}
+	if hit("経理") || s.RuleHitCount() != 2 {
+		rows, _ := s.DB.Query(`SELECT n.path, h.msg FROM rule_hits h JOIN nodes n ON n.id=h.node_id`)
+		for rows.Next() {
+			var a, b string
+			rows.Scan(&a, &b)
+			t.Log(a, b)
+		}
+		rows.Close()
+		t.Fatalf("renamed: %d", s.RuleHitCount())
+	}
+	s.PlanDelete([]int64{ids["readme.txt"]}, "x")
+	if hit("readme.txt") {
+		t.Fatal("deleted item")
+	}
+	sm, _ := s.Summary()
+	for _, c := range sm.Checks {
+		if c.Key == "rule5s" && c.Count != 1 {
+			t.Fatalf("summary rule5s=%d", c.Count)
+		}
+	}
+	// 仮想フォルダの下へ移すと第2階層になり対象外。仮想フォルダを消すと元に戻る
+	v, _, _ := s.VCreate(VRoot, "001_共通", "x")
+	s.PlanMove([]int64{ids["総務"]}, v, "x")
+	if hit("総務") {
+		t.Fatal("depth2")
+	}
+	s.VDelete(v, "x")
+	if !hit("総務") {
+		t.Fatal("restored after vfolder delete")
+	}
+	s.PlanClear([]int64{ids["経理"], ids["readme.txt"]}, "x")
+	if !hit("経理") || !hit("readme.txt") {
+		t.Fatal("cleared")
+	}
 	// ずらし: 現在のルートが整理後の第1階層 → 経理などは第2階層で対象外、ルートが対象
 	r.CurrentOffset = 1
 	s.SaveRules(r)
@@ -715,3 +768,5 @@ func TestShortcut(t *testing.T) {
 		t.Fatalf("broken: %+v", rows)
 	}
 }
+
+func ptr(s string) *string { return &s }

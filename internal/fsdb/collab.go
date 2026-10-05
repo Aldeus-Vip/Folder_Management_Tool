@@ -684,7 +684,7 @@ func (ma *MergeAnalysis) Apply(out string, choices map[string]int) ([]string, er
 			codes = append(codes, s.Code)
 		}
 	}
-	st.DB.Exec(`DELETE FROM meta WHERE key IN ('editor_code','copied_at','master_path')`)
+	st.DB.Exec(`DELETE FROM meta WHERE key IN ('editor_code','copied_at','master_path','rule_hits_ver')`) // 5Sの判定は開いたときに作り直す
 	if err := st.SetMeta(map[string]string{"master_rev": newUUID(), "merged_from": strings.Join(codes, ", "), "merged_at": now}); err != nil {
 		return nil, err
 	}

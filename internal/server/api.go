@@ -317,9 +317,10 @@ func (a *App) apiVDelete(r *http.Request, s *fsdb.Store, code string) (any, erro
 // ---- アクション・タグ ----
 
 type idsReq struct {
-	IDs    []int64  `json:"ids"`
-	Target string   `json:"target"`
-	Owner  []string `json:"owner"` // 担当(部 / 課 / 担当 / 担当者)
+	IDs     []int64  `json:"ids"`
+	Target  string   `json:"target"`
+	Owner   []string `json:"owner"`   // 担当(部 / 課 / 担当 / 担当者)
+	NewName string   `json:"newName"` // 移動と同時に設定する名前(1項目のみ)
 }
 
 func (a *App) apiPlanHold(r *http.Request, s *fsdb.Store, code string) (any, error) {
@@ -351,7 +352,7 @@ func (a *App) apiPlanMove(r *http.Request, s *fsdb.Store, code string) (any, err
 	if err := decode(r, &q); err != nil {
 		return nil, err
 	}
-	rep, err := s.PlanMove(q.IDs, q.Target, code)
+	rep, err := s.PlanMoveAs(q.IDs, q.Target, q.NewName, code)
 	if err != nil {
 		return nil, badRequest("%v", err)
 	}

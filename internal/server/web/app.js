@@ -572,7 +572,7 @@ function showReport(r, verb) {
   modal(`<h2>${verb}: ${fmtNum(r.applied)}件を設定しました</h2>
     ${blocked.length ? `<h3>整理ルール(5S)に合わないため設定しなかった項目: ${blocked.length}件</h3>${blocked.slice(0, 50).map(i => li(i, 'block')).join('')}` : ''}
     ${warned.length ? `<h3>警告(設定はしています): ${warned.length}件</h3>${warned.slice(0, 50).map(i => li(i, '')).join('')}` : ''}
-    <p class="hint">ルールは「⚙ オプション」→「整理後の構成ルール(5S)」で変更できます。</p>`, null, '', '閉じる');
+    <p class="hint">名前がルールに合わない場合は、右クリック →「移動…」の「移動後の名前」で直してから移動できます。ルールは「⚙ オプション」→「5Sルール」で変更できます。</p>`, null, '', '閉じる');
 }
 function showIssue(is, verb) {
   if (!is || (!is.blocks?.length && !is.warns?.length)) return false;
@@ -806,15 +806,19 @@ const MoveFlow = {
     const union = [...new Set(nodes.flatMap(r => r.tags || []))];
     const m = modal(`<h2>📦 ${nodes.length === 1 ? `「${esc(one.node?.n ?? one.n)}」` : `${nodes.length}件`}を移動</h2>
       <p class="hint">期限とタグを設定して OK を押すと、<b>右の「整理後のフォルダ構成」から移動先のフォルダ(🗂)を選ぶ</b>状態になります(Esc / キャンセルで中止)。</p>
+      ${one ? `<h3>移動後の名前</h3><input type="text" id="mv-name" style="width:100%" value="${esc(one.nn || one.node?.n || one.n)}">
+        <p class="hint" style="margin-top:2px">5Sルール(名前の形式など)は<b>移動後の名前</b>で判定します。ルールに合わない名前は、ここで直してから移動できます。</p>` : ''}
       <h3>期限</h3><div id="mv-due"></div>
       <h3 style="margin-top:10px">タグ(目的・種類)</h3><div id="mv-tags"></div>`,
       () => {
         const due = dueW.get(), tags = tagW.get();
+        const orig = one ? (one.node?.n ?? one.n) : '', nn = one ? $('#mv-name', m).value.trim() : '';
+        const newName = one && nn && nn !== (one.nn || orig) ? nn : '';
         Pick.start(`${nodes.length}件の移動先を、右の「整理後のフォルダ構成」からクリックして選んでください`, async v => {
           const ids = Plan.ids(nodes);
           const add = tags.filter(t => !union.includes(t)), remove = union.filter(t => !tags.includes(t));
           if (add.length || remove.length) await api('/api/tags', { ids, add, remove }); // タグ必須ルールのため先に設定
-          const rep = await api('/api/plan/move', { ids, target: v.uuid });
+          const rep = await api('/api/plan/move', { ids, target: v.uuid, newName });
           const blocked = new Set((rep.issues || []).filter(i => i.blocks?.length).map(i => i.id));
           const moved = ids.filter(id => !blocked.has(id));
           if (moved.length) await api('/api/plan/fields', { ids: moved, due });

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -716,7 +717,7 @@ func (s *Store) EnsureRuleHits() error {
 		return err
 	}
 	if r.ApplyCurrent {
-		if err := s.computeRuleHits(tx, r); err != nil {
+		if err := s.computeRuleHits(tx, r, 1, -1); err != nil {
 			return err
 		}
 	}
@@ -727,14 +728,116 @@ func (s *Store) EnsureRuleHits() error {
 		return err
 	}
 	s.mu.Lock()
-	s.tf, s.summary = nil, nil
+	s.tf = nil
 	s.mu.Unlock()
 	return nil
 }
 
-func (s *Store) computeRuleHits(tx *sql.Tx, r Rules) error {
+// ruleHitsChanged はアクションを変えた項目(とその配下)の判定をやり直す。
+// 移動・名前変更を設定した項目は「移動後の階層・名前」で判定するため、
+// ルールに合うように移動・名前変更すれば「5S外れ」は消える(削除を設定した項目も対象外になる)。
+func (s *Store) ruleHitsChanged(ids []int64) {
+	r := s.Rules()
+	if !r.ApplyCurrent || len(ids) == 0 {
+		return
+	}
+	var rg [][2]int64
+	for _, x := range ids {
+		var end int64
+		if s.DB.QueryRow(`SELECT end_id FROM nodes WHERE id=?`, x).Scan(&end) == nil {
+			rg = append(rg, [2]int64{x, end})
+		}
+	}
+	sort.Slice(rg, func(i, j int) bool { return rg[i][0] < rg[j][0] })
+	var merged [][2]int64
+	for _, x := range rg {
+		if n := len(merged); n > 0 && x[0] <= merged[n-1][1] {
+			merged[n-1][1] = max(merged[n-1][1], x[1])
+			continue
+		}
+		merged = append(merged, x)
+	}
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return
+	}
+	defer tx.Rollback()
+	for _, x := range merged {
+		if _, err := tx.Exec(`DELETE FROM rule_hits WHERE node_id BETWEEN ? AND ?`, x[0], x[1]); err != nil {
+			return
+		}
+		if err := s.computeRuleHits(tx, r, x[0], x[1]); err != nil {
+			return
+		}
+	}
+	if tx.Commit() == nil {
+		s.mu.Lock()
+		s.tf = nil
+		s.mu.Unlock()
+	}
+}
+
+// placedUnder は仮想フォルダ(配下を含む)へ移動を設定した項目のID(仮想フォルダの移動・削除で判定をやり直す範囲)。
+func (s *Store) placedUnder(uuid string) []int64 {
+	var out []int64
+	for _, v := range s.vSubtreeIDs(uuid) {
+		rows, err := s.DB.Query(`SELECT node_id FROM plan WHERE action='move' AND vparent=?`, v)
+		if err != nil {
+			continue
+		}
+		for rows.Next() {
+			var id int64
+			rows.Scan(&id)
+			out = append(out, id)
+		}
+		rows.Close()
+	}
+	return out
+}
+
+// computeRuleHits は ID が a〜b(b<0 は最後まで)の項目を判定して rule_hits に書き込む。
+// アクションを反映した「整理後の状態」で判定する:
+//   - 移動(自身または親フォルダの設定): 整理後の階層、移動後の名前
+//   - 削除: 判定しない(整理後には残らない)
+//   - 未処理・保留: 現在の階層 + CurrentOffset、現在の名前
+func (s *Store) computeRuleHits(tx *sql.Tx, r Rules, a, b int64) error {
+	if err := s.ensureIndex(); err != nil {
+		return err
+	}
 	rs := r.memoized()
-	rows, err := tx.Query(`SELECT id, COALESCE(parent_id,0), is_dir, depth, name, flags, child_count FROM nodes ORDER BY id`)
+	s.mu.Lock()
+	pi := s.pidx
+	vdepth := map[string]int{}
+	for u, n := range s.vt.nodes {
+		vdepth[u] = n.Depth
+	}
+	s.mu.Unlock()
+	newName := map[int64]string{}
+	if rows, err := tx.Query(`SELECT node_id, new_name FROM plan WHERE action='move' AND new_name!=''`); err == nil {
+		for rows.Next() {
+			var id int64
+			var n string
+			rows.Scan(&id, &n)
+			newName[id] = n
+		}
+		rows.Close()
+	}
+	placedDepth := map[int64]int{}
+	pdepth := func(id int64) int {
+		d, ok := placedDepth[id]
+		if !ok {
+			tx.QueryRow(`SELECT depth FROM nodes WHERE id=?`, id).Scan(&d)
+			placedDepth[id] = d
+		}
+		return d
+	}
+	q := `SELECT id, COALESCE(parent_id,0), is_dir, depth, name, flags, child_count FROM nodes WHERE id>=?`
+	args := []any{a}
+	if b >= 0 {
+		q += ` AND id<=?`
+		args = append(args, b)
+	}
+	rows, err := tx.Query(q+` ORDER BY id`, args...)
 	if err != nil {
 		return err
 	}
@@ -762,6 +865,21 @@ func (s *Store) computeRuleHits(tx *sql.Tx, r Rules) error {
 			return err
 		}
 		nd := d + r.CurrentOffset
+		if k := pi.nearest(id); k >= 0 {
+			switch pi.acts[k] {
+			case ActDelete:
+				continue // 整理後には残らない
+			case ActMove:
+				if vd, ok := vdepth[pi.vps[k]]; ok {
+					p := pi.ids[k]
+					nd = vd + 1 + d - pdepth(p)
+					if nn := newName[id]; id == p && nn != "" {
+						name = nn
+						flags = flags&^nameFlagMask | NameFlags(nn, dir)
+					}
+				}
+			}
+		}
 		if k := kids[parent]; k != nil && dir {
 			k.kids = append(k.kids, name)
 		}
