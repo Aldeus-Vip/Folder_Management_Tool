@@ -19,7 +19,7 @@ import (
 )
 
 // version はリリース時に -ldflags "-X main.version=1.0.0" で埋め込む
-var version = "1.0.0"
+var version = "1.0.1"
 
 func main() {
 	port := flag.Int("port", 8765, "待ち受けポート(使用中なら空きポートを自動選択)")

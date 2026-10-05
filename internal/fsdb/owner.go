@@ -55,7 +55,7 @@ func (f OwnerFields) inherit(parent OwnerFields) OwnerFields {
 	return f
 }
 
-// Label は表示用(例:「部: 整備業務部 / 課: 業務推進課」)。
+// Label は表示用(例:「部: 営業部 / 課: 第一課」)。
 func (f OwnerFields) Label() string {
 	var out []string
 	for i, v := range f {

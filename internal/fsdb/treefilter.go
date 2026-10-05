@@ -84,7 +84,7 @@ func segsCond(segs [][2]int64) (string, []any) {
 
 // TreeFilterFor は絞り込みを作る(結果はアクション・担当・ルールを変えるまでキャッシュ)。
 //
-//	owner: 担当(親フォルダからの引き継ぎを含む)。"段:値"(例 "1:業務推進課")。"-" = 担当が決まっていない項目。"" = 指定なし
+//	owner: 担当(親フォルダからの引き継ぎを含む)。"段:値"(例 "1:第一課")。"-" = 担当が決まっていない項目。"" = 指定なし
 //	mode : "hold"(保留。親フォルダの設定を含む)/ "rule"(5Sルールに合わない項目)/ "unhandled"(未処理)/ ""
 func (s *Store) TreeFilterFor(owner, mode string) (*TreeFilter, error) {
 	if owner == "" && mode == "" {
