@@ -770,3 +770,21 @@ func TestShortcut(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
+
+// 仮想フォルダと移動した実フォルダは名前順に混ぜて並べる(フォルダが先、ファイルが後)
+func TestVChildrenOrder(t *testing.T) {
+	s, ids := testDB(t)
+	s.VCreate(VRoot, "020_業務", "x")
+	s.VCreate(VRoot, "005_共有", "x")
+	s.PlanMove([]int64{ids["readme.txt"], ids["経理"]}, VRoot, "x")
+	s.PlanSetFields([]int64{ids["経理"]}, PlanFields{NewName: ptr("０１０_管理職")}, "x")
+	s.VCreateLink(VRoot, "v:root", "000_リンク", "x")
+	rows, _ := s.VChildren(VRoot)
+	var got []string
+	for _, r := range rows {
+		got = append(got, r.Name)
+	}
+	if strings.Join(got, ",") != "005_共有,０１０_管理職,020_業務,000_リンク,readme.txt" {
+		t.Fatalf("order: %v", got)
+	}
+}

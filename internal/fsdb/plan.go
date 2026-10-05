@@ -730,6 +730,7 @@ func (s *Store) VChildren(uuid string) ([]VRow, error) {
 		out = append(out, VRow{Key: fmt.Sprintf("n:%d", x.ID), Kind: kind, Name: name, Depth: n.Depth + 1,
 			Files: x.Inner, Size: x.InnerS, Kids: int(x.Children), Node: x, Rule: rules.rowRule(x.IsDir, n.Depth+1, name, func() []string { return s.realKidDirs(x.ID) })})
 	}
+	sortVRows(out)
 	// 同じ階層の似た名前(フォルダ同士)。項目が多いときは、仮想フォルダが絡む組だけを調べる
 	var idx []int
 	for i := range out {
@@ -773,6 +774,7 @@ func (s *Store) VReal(id int64, depth int) ([]VRow, error) {
 		out[i] = VRow{Key: fmt.Sprintf("n:%d", x.ID), Kind: kind, Name: x.Name, Depth: depth + 1, Files: x.Inner, Size: x.InnerS, Kids: int(x.Children), Node: x,
 			Rule: rules.rowRule(x.IsDir, depth+1, x.Name, func() []string { return s.realKidDirs(x.ID) })}
 	}
+	sortVRows(out)
 	return out, nil
 }
 
@@ -816,4 +818,25 @@ func (s *Store) SimilarWarnings() ([][2]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// sortVRows は仮想ツリーの直下の行を、エクスプローラーと同じく「フォルダ(仮想フォルダ・移動した実フォルダ)→ ファイル・ショートカット」の順、
+// それぞれ名前順(全角/半角・大文字/小文字を区別しない)に並べる。
+func sortVRows(rows []VRow) {
+	group := func(r VRow) int {
+		if r.Kind == "vdir" || r.Kind == "dir" {
+			return 0
+		}
+		return 1
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if gi, gj := group(rows[i]), group(rows[j]); gi != gj {
+			return gi < gj
+		}
+		a, b := normN(rows[i].Name), normN(rows[j].Name)
+		if a != b {
+			return a < b
+		}
+		return rows[i].Name < rows[j].Name
+	})
 }
