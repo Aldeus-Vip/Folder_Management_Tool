@@ -131,18 +131,17 @@ func (a *App) Handler() http.Handler {
 			return map[string]int64{"count": s.RuleHitCount()}, nil
 		}),
 		"GET /api/migestimate": a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) { return s.EstimateMigration() }),
-		"GET /api/migexts":     a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) { return s.MigratedExts(), nil }),
-		"POST /api/migexts": a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) {
+		"GET /api/migscope":    a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) { return s.MigrationScope(), nil }),
+		"POST /api/migscope": a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) {
 			var q struct {
-				Exts string `json:"exts"`
+				Mode  string `json:"mode"`
+				Exts  string `json:"exts"`
+				Paths string `json:"paths"`
 			}
 			if err := decode(r, &q); err != nil {
 				return nil, err
 			}
-			if err := s.SetMigratedExts(q.Exts); err != nil {
-				return nil, err
-			}
-			return s.MigratedExts(), nil
+			return s.SetMigrationScope(q.Mode, q.Exts, q.Paths)
 		}),
 		"GET /api/owners":    a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) { return s.Owners() }),
 		"GET /api/vwarnings": a.withStore(a.apiVWarnings),
