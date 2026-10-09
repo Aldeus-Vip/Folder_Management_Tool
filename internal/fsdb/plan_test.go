@@ -881,3 +881,33 @@ func TestMigrationEstimate(t *testing.T) {
 		t.Fatalf("folders=%d tasks=%d exts=%+v", e.Folders, e.Tasks, e.TopExts)
 	}
 }
+
+// 初動移行の範囲: 除外リスト(Excel からの貼り付け)と除外フォルダ
+func TestMigrationScope(t *testing.T) {
+	s, ids := testDB(t)
+	sc, err := s.SetMigrationScope("exclude", "ファイル種類\t拡張子\n画像ファイル\tJPG\n画像ファイル\t.PNG\n圧縮ファイル\tZIP\n", "総務\n存在しない")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(sc.Exts, ",") != "jpg,png,zip" || len(sc.Ignored) != 4 || len(sc.Missing) != 1 || sc.Missing[0] != "存在しない" {
+		t.Fatalf("scope: %+v", sc)
+	}
+	m, _ := s.migMatcher(s.MigrationScope())
+	if !m.file(ids[`経理\2023\請求書.pdf`], "pdf") || m.file(ids[`経理\2023\請求書.pdf`], "JPG") || !m.file(ids[`経理\2023\請求書.pdf`], "") {
+		t.Fatal("exclude by extension")
+	}
+	if m.file(ids[`総務\規程.docx`], "docx") || m.folderLocation(ids[`総務\古い`]) != "FileServer" || m.folderLocation(ids["経理"]) != "Both" {
+		t.Fatal("excluded folder")
+	}
+	e, _ := s.EstimateMigration()
+	// 総務の中(docx, txt)だけが Step2、残り(pdf×2, xlsx, txt×2)は Step1
+	if e.Step1.None != 5 || e.Step2.None != 2 || len(e.TopExts1) != 3 {
+		t.Fatalf("estimate: %+v %+v", e.Step1, e.Step2)
+	}
+	// 「移行した拡張子」の指定(従来どおり)
+	s.SetMigratedExts("pdf, (なし)")
+	m, _ = s.migMatcher(s.MigrationScope())
+	if !m.file(1, "PDF") || m.file(1, "xlsx") || !m.file(1, "") {
+		t.Fatal("include")
+	}
+}

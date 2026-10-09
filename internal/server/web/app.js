@@ -641,7 +641,8 @@ function migrationEstimateHTML(e) {
   const advice = scale === 0 ? '移行が必要なファイルはありません。'
     : s2.move < 1000 && s2.moveS < 5 * 1024 ** 3 && e.folders < 50 ? '少量です。ブラウザからのアップロードでも対応できます(ただし更新日時・作成者はアップロード時のものになります)。'
     : 'SPMT(SharePoint Migration Tool)での移行を推奨します(量が多い・フォルダが分散している)。';
-  return `<h3 style="margin-top:12px">移行量の見積もり ${e.exts.length ? '' : '<span class="b mig">拡張子リストが未入力のため、すべて Step2 として集計しています</span>'}</h3>
+  const sc = e.scope, none = !sc.exts.length && !sc.paths.length;
+  return `<h3 style="margin-top:12px">移行量の見積もり ${none ? `<span class="b mig">初動移行の範囲が未入力のため、すべて ${sc.mode === 'exclude' ? 'Step1' : 'Step2'} として集計しています</span>` : ''}</h3>
     <table class="t"><tr><th></th><th class="num" colspan="2">移動</th><th class="num" colspan="2">削除</th><th class="num" colspan="2">保留</th><th class="num" colspan="2">未処理</th></tr>
       ${row('<b>Step1</b> SharePoint 上で整理<br><span class="muted">(移行済みの拡張子)</span>', e.step1)}
       ${row('<b>Step2</b> 残りを移行<br><span class="muted">(ファイルサーバーにのみ)</span>', s2)}</table>
@@ -652,6 +653,7 @@ function migrationEstimateHTML(e) {
       ${s2.none ? `<li>Step2 の「未処理」${fmtNum(s2.none)} ファイル(${fmtSize(s2.noneS)})は、判断が終わるまで移行されません(現状の構成で移行するかは方針次第)。</li>` : ''}
       ${s2.delete ? `<li>Step2 の「削除」${fmtNum(s2.delete)} ファイルは移行しないだけで済みます(ファイルサーバー上で削除する必要はありません)。</li>` : ''}
       <li><b>${advice}</b></li></ul>
+    ${e.topExts1.length ? `<p class="hint" style="margin-top:6px">移行済み(Step1)と判定した拡張子(件数の多い順。判定の確認用): ${e.topExts1.map(x => `${esc(x.label)} ${fmtNum(x.count)}件`).join(' / ')}</p>` : ''}
     ${e.topExts.length ? `<p class="hint" style="margin-top:6px">Step2 で移動するファイルの拡張子(サイズ順): ${e.topExts.map(x => `${esc(x.label)} ${fmtNum(x.count)}件・${fmtSize(x.size)}`).join(' / ')}</p>` : ''}`;
 }
 
@@ -2097,23 +2099,37 @@ Views.plan = {
       $('#pl-state').onchange = $('#pl-editor').onchange = $('#pl-tag').onchange = $('#pl-owner').onchange = guard(() => this.load());
       $('#pl-csv').onclick = () => download('/api/export/list.csv', this.params());
       $('#pl-wo').onclick = guard(async () => {
-        const exts = await api('/api/migexts');
+        const sc = await api('/api/migscope');
         const m = modal(`<h2>作業指示CSVの出力</h2>
           <p class="hint">判断結果を<b>作業指示CSV</b>(実行の正本)として出力します。承認(Approval 列)は Pending で出力するので、レビュー後に Approved に変えてください。<br>
           ・行は子→親の実行順(ExecOrder)です。親フォルダの削除に含まれる配下の削除は省略し、配下の移動は残します(先に移動してから削除)。<br>
-          ・<b>Location</b>: ファイルは下の拡張子リストで判定(含まれれば SharePoint、それ以外は FileServer)、フォルダは Both。移行ログによる補正は別途行ってください。<br>
+          ・<b>Location</b>: ファイルは下の「初動移行の範囲」で判定(移行済みなら SharePoint、それ以外は FileServer)。フォルダは Both(除外フォルダの中は FileServer)。<br>
           ・Note 列: 配下に保留がある削除、SharePoint で使えない文字・400文字超のパス、アクセスできなかった項目などの注意。</p>
-          <h3>初動移行(SharePoint へ移行済み)の拡張子</h3>
-          <textarea id="wo-exts" style="width:100%;height:70px" placeholder="例: docx, xlsx, pptx, pdf(「,」・空白・改行区切り。大文字/小文字は区別しません)">${esc(exts.join(', '))}</textarea>
+          <h3>初動移行(IT が SharePoint へコピーした範囲)</h3>
+          <label class="inl"><input type="radio" name="wo-mode" value="exclude" ${sc.mode === 'exclude' ? 'checked' : ''}> 下の拡張子<b>以外</b>を移行した(IT から「除外した拡張子」のリストを受け取った場合)</label>
+          <label class="inl"><input type="radio" name="wo-mode" value="include" ${sc.mode !== 'exclude' ? 'checked' : ''}> 下の拡張子<b>だけ</b>を移行した</label>
+          <textarea id="wo-exts" style="width:100%;height:70px" placeholder="例: jpg, png, mp4, zip(「,」・空白・改行区切り。Excel の表をそのまま貼り付けても、拡張子の列だけを読み取ります。大文字/小文字は区別しません。拡張子なしは「(なし)」)">${esc(sc.exts.join(', '))}</textarea>
+          <h3 style="margin-top:8px">移行対象外のフォルダ(任意)</h3>
+          <textarea id="wo-paths" style="width:100%;height:50px" placeholder="フォルダ単位で移行しなかったものを1行に1つ(フルパス、またはルートからの相対パス)。この中のファイルはすべて FileServer として扱います">${esc(sc.paths.join('\n'))}</textarea>
+          <div id="wo-scope"></div>
           <div class="btns" style="margin-top:8px"><button data-est>📊 移行量を見積もる</button><button data-ts>新構成フォルダ一覧(target_structure.csv)</button></div>
           <div id="wo-est"></div>`,
           async mm => {
-            await api('/api/migexts', { exts: $('#wo-exts', mm).value });
+            await save(mm);
             download('/api/export/workorder.csv');
           }, '作業指示CSVをダウンロード');
+        // 保存して、読み取れなかった入力・見つからないフォルダを知らせる
+        const save = async mm => {
+          const r = await api('/api/migscope', { mode: $('input[name="wo-mode"]:checked', mm).value, exts: $('#wo-exts', mm).value, paths: $('#wo-paths', mm).value });
+          $('#wo-exts', mm).value = r.exts.join(', ');
+          $('#wo-scope', mm).innerHTML = `<p class="hint">拡張子 ${fmtNum(r.exts.length)} 件を「${r.mode === 'exclude' ? '移行しなかった' : '移行した'}」拡張子として保存しました。</p>`
+            + (r.ignored?.length ? `<p class="hint">拡張子として読み取らなかった入力: ${r.ignored.map(esc).join('、')}(見出し・種類名などは無視します)</p>` : '')
+            + (r.missing?.length ? `<div class="issue">見つからないフォルダ: ${r.missing.map(esc).join('、')}</div>` : '');
+          return r;
+        };
         $('[data-ts]', m).onclick = () => download('/api/export/target_structure.csv');
         $('[data-est]', m).onclick = guard(async () => {
-          await api('/api/migexts', { exts: $('#wo-exts', m).value });
+          await save(m);
           $('#wo-est', m).innerHTML = '<p class="muted">集計中…(大規模なDBでは数秒かかります)</p>';
           $('#wo-est', m).innerHTML = migrationEstimateHTML(await api('/api/migestimate'));
         });

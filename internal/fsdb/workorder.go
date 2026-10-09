@@ -16,33 +16,6 @@ import (
 // ファイルサーバーの削除は PowerShell、ファイルサーバー → SharePoint は SPMT)。
 // 行は「子 → 親」の実行順(ExecOrder)に並べる。
 
-// MigratedExts は初動移行(IT部門が SharePoint へそのまま移行した分)の対象拡張子(小文字・ドットなし)。
-func (s *Store) MigratedExts() []string {
-	var v string
-	s.DB.QueryRow(`SELECT value FROM meta WHERE key='migrated_exts'`).Scan(&v)
-	return splitExts(v)
-}
-
-func (s *Store) SetMigratedExts(list string) error {
-	return s.SetMeta(map[string]string{"migrated_exts": strings.Join(splitExts(list), ",")})
-}
-
-func splitExts(v string) []string {
-	var out []string
-	seen := map[string]bool{}
-	for _, x := range strings.FieldsFunc(v, func(r rune) bool {
-		return r == ',' || r == ' ' || r == '\n' || r == '\r' || r == '\t' || r == ';' || r == '、'
-	}) {
-		x = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(x), "."))
-		if x != "" && !seen[x] {
-			seen[x] = true
-			out = append(out, x)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
 var workOrderAction = map[string]string{ActMove: "Move", ActDelete: "Delete", ActHold: "Hold"}
 
 // SharePoint で使えない文字(移行先の名前の確認用)
@@ -72,10 +45,7 @@ func (s *Store) WriteWorkOrder(w io.Writer) error {
 	if t, err := time.ParseInLocation("2006/01/02 15:04:05", scanned, time.Local); err == nil {
 		scanned = t.Format("2006-01-02T15:04:05")
 	}
-	exts := map[string]bool{}
-	for _, e := range s.MigratedExts() {
-		exts[e] = true
-	}
+	mig, _ := s.migMatcher(s.MigrationScope())
 	var ns []Node
 	if err := s.SearchEach(Filter{State: "own"}, func(n *Node) error {
 		if n.Action != "" {
@@ -124,8 +94,8 @@ func (s *Store) WriteWorkOrder(w io.Writer) error {
 		order++
 		itemType, loc := "File", "FileServer"
 		if n.IsDir {
-			itemType, loc = "Folder", "Both"
-		} else if exts[strings.ToLower(n.Ext)] {
+			itemType, loc = "Folder", mig.folderLocation(n.ID)
+		} else if mig.file(n.ID, n.Ext) {
 			loc = "SharePoint"
 		}
 		var target string
@@ -237,13 +207,14 @@ func (a *ActionAmount) add(act string, size int64) {
 }
 
 type MigrationEstimate struct {
-	Exts    []string     `json:"exts"`
-	Step1   ActionAmount `json:"step1"`   // SharePoint 側(移行済みの拡張子)
-	Step2   ActionAmount `json:"step2"`   // ファイルサーバー側(それ以外の拡張子)
-	Folders int          `json:"folders"` // Step2 で移動するファイルがあるフォルダの数(散らばり具合)
-	Tasks   int          `json:"tasks"`   // Step2 の移行単位(移動を設定した項目)の数 ≒ SPMT のタスク数の目安
-	Ops1    int          `json:"ops1"`    // Step1 の操作の数(移行済みのファイルを含む、移動・削除を設定した項目)
-	TopExts []Count      `json:"topExts"` // Step2 で移動するファイルの拡張子(サイズ順)
+	Scope    MigScope     `json:"scope"`
+	Step1    ActionAmount `json:"step1"`    // SharePoint 側(移行済みの拡張子)
+	Step2    ActionAmount `json:"step2"`    // ファイルサーバー側(それ以外の拡張子)
+	Folders  int          `json:"folders"`  // Step2 で移動するファイルがあるフォルダの数(散らばり具合)
+	Tasks    int          `json:"tasks"`    // Step2 の移行単位(移動を設定した項目)の数 ≒ SPMT のタスク数の目安
+	Ops1     int          `json:"ops1"`     // Step1 の操作の数(移行済みのファイルを含む、移動・削除を設定した項目)
+	TopExts  []Count      `json:"topExts"`  // Step2 で移動するファイルの拡張子(サイズ順)
+	TopExts1 []Count      `json:"topExts1"` // Step1(移行済みと判定した)ファイルの拡張子(件数順)。判定の確認用
 }
 
 // EstimateMigration はファイルを1件ずつ、拡張子(初動移行の対象か)と及んでいるアクションで振り分けて数える。
@@ -251,14 +222,9 @@ func (s *Store) EstimateMigration() (*MigrationEstimate, error) {
 	if err := s.ensureIndex(); err != nil {
 		return nil, err
 	}
-	me := &MigrationEstimate{Exts: s.MigratedExts()}
-	exts := map[string]bool{}
-	for _, e := range me.Exts {
-		exts[e] = true
-	}
-	if exts["(なし)"] {
-		exts[""] = true
-	}
+	me := &MigrationEstimate{Scope: s.MigrationScope()}
+	mig, _ := s.migMatcher(me.Scope)
+	byExt1 := map[string]*Count{}
 	rows, err := s.DB.Query(`SELECT id, COALESCE(parent_id,0), ext, size FROM nodes WHERE is_dir=0`)
 	if err != nil {
 		return nil, err
@@ -281,8 +247,19 @@ func (s *Store) EstimateMigration() (*MigrationEstimate, error) {
 		if k := pi.nearest(id); k >= 0 {
 			act, from = pi.acts[k], pi.ids[k]
 		}
-		if exts[strings.ToLower(ext)] {
+		if mig.file(id, ext) {
 			me.Step1.add(act, size)
+			e := strings.ToLower(ext)
+			c := byExt1[e]
+			if c == nil {
+				c = &Count{Key: e, Label: e}
+				if e == "" {
+					c.Label = "(拡張子なし)"
+				}
+				byExt1[e] = c
+			}
+			c.Count++
+			c.Size += size
 			if act == ActMove || act == ActDelete {
 				ops1[from] = true
 			}
@@ -312,6 +289,14 @@ func (s *Store) EstimateMigration() (*MigrationEstimate, error) {
 	sort.Slice(me.TopExts, func(i, j int) bool { return me.TopExts[i].Size > me.TopExts[j].Size })
 	if len(me.TopExts) > 10 {
 		me.TopExts = me.TopExts[:10]
+	}
+	me.TopExts1 = []Count{}
+	for _, c := range byExt1 {
+		me.TopExts1 = append(me.TopExts1, *c)
+	}
+	sort.Slice(me.TopExts1, func(i, j int) bool { return me.TopExts1[i].Count > me.TopExts1[j].Count })
+	if len(me.TopExts1) > 30 {
+		me.TopExts1 = me.TopExts1[:30]
 	}
 	return me, rows.Err()
 }
