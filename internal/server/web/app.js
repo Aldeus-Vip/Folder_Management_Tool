@@ -657,6 +657,42 @@ function migrationEstimateHTML(e) {
     ${e.topExts.length ? `<p class="hint" style="margin-top:6px">Step2 で移動するファイルの拡張子(サイズ順): ${e.topExts.map(x => `${esc(x.label)} ${fmtNum(x.count)}件・${fmtSize(x.size)}`).join(' / ')}</p>` : ''}`;
 }
 
+// ===== 整理後の項目数(ファイル + フォルダ)。移行先の上限(例: 900,000)と比べる =====
+function itemsBadgeHTML(e) {
+  const over = e.over > 0;
+  return `<span class="b ${over ? 'mig' : 'org'}" style="${over ? '' : 'background:var(--green-bg);color:var(--green)'}" title="設定したアクションを反映した、整理後に残るファイル + フォルダの数(サマリーに内訳)">整理後の見込み ${fmtNum(e.total)} / 上限 ${fmtNum(e.limit)}${over ? `(${fmtNum(e.over)} 超過)` : ''}</span>`;
+}
+const ItemsCard = {
+  async load(el) {
+    if (!el) return;
+    const e = await api('/api/items').catch(err => { el.innerHTML = `<p class="muted">${esc(err.message)}</p>`; });
+    if (e) this.render(el, e);
+  },
+  render(el, e) {
+    const ff = f => `<td class="num">${fmtNum(f.files)}</td><td class="num">${fmtNum(f.folders)}</td><td class="num"><b>${fmtNum(f.files + f.folders)}</b></td>`;
+    const p = Math.min(100, pct(e.total, e.limit));
+    el.innerHTML = `<h2>整理後の項目数(ファイル + フォルダ)</h2>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <div class="tr" style="width:240px;height:12px;background:var(--track);border-radius:6px;overflow:hidden"><i style="display:block;height:100%;width:${p}%;background:${e.over > 0 ? 'var(--red)' : 'var(--bar)'}"></i></div>
+        <span>整理後の見込み <b>${fmtNum(e.total)}</b> / 上限 ${fmtNum(e.limit)} 項目</span>
+        ${e.over > 0 ? `<span class="b mig">${fmtNum(e.over)} 項目の削減が必要</span>` : `<span class="b" style="background:var(--green-bg);color:var(--green)">上限内(あと ${fmtNum(-e.over)} 項目)</span>`}
+        <span class="muted">現在 ${fmtNum(e.current.files + e.current.folders)} 項目</span>
+        <span class="grow"></span><label>上限 <input type="number" id="it-limit" value="${e.limit}" min="1" style="width:110px"></label><button id="it-save">変更</button>
+      </div>
+      <table class="t" style="margin-top:8px"><tr><th></th><th class="num">ファイル</th><th class="num">フォルダ</th><th class="num">合計</th></tr>
+        <tr><td>現在(スキャン時点)</td>${ff(e.current)}</tr>
+        <tr><td>新構成: 仮想フォルダ</td><td></td><td class="num">${fmtNum(e.vfolders)}</td><td class="num"><b>${fmtNum(e.vfolders)}</b></td></tr>
+        <tr><td>新構成: 移動する項目</td>${ff(e.moved)}</tr>
+        <tr><td>今の場所に残る: 未処理</td>${ff(e.kept)}</tr>
+        <tr><td>今の場所に残る: 保留</td>${ff(e.held)}</tr>
+        <tr class="muted"><td>削除で減る</td>${ff(e.deleted)}</tr>
+        <tr class="muted"><td>空になって残らない旧フォルダ</td><td></td><td class="num">${fmtNum(e.emptied)}</td><td class="num">${fmtNum(e.emptied)}</td></tr></table>
+      <p class="hint">整理後の見込み = 仮想フォルダ + 移動する項目 + 未処理 + 保留。中身をすべて移動・削除したフォルダは残さない前提です(元から空のフォルダ・アクセスできなかったフォルダは残るものとして数えます)。<br>
+      複数の部門で上限を共有する場合は、各部門のDBの見込みを合計するか、「データ取り込み → ② 複数のDBを統合」で1つにまとめたDBで確認してください。</p>`;
+    $('#it-save', el).onclick = guard(async () => { this.render(el, await api('/api/itemlimit', { limit: +$('#it-limit', el).value })); toast('上限を変更しました'); });
+  },
+};
+
 // ===== 作業者コード(誰の変更かを記録する。複数人で編集するときの統合に使う) =====
 const CodeGate = {
   prompt() {
@@ -1550,8 +1586,9 @@ Views.summary = {
         <div class="stat"><div class="k">最大階層</div><div class="v">${sm.maxDepth}</div></div>
         <div class="stat"><div class="k">データ取得</div><div class="v" style="font-size:13px">${srcLabel(m)}<br>${esc(m.scanned_at || m.merged_at || m.built_at)}</div></div>
       </div>
-      <div class="card"><h2>整理の進み具合</h2>${progressHTML(sm.progress)}
+      <div class="card"><h2>整理の進み具合 <span class="muted" style="font-size:12px;font-weight:400">(ファイル数で計算。フォルダは含みません)</span></h2>${progressHTML(sm.progress)}
         <p><a onclick="show('organize')">整理画面を開く →</a> ・ <a onclick="show('list', {state: 'unhandled'})">未処理の項目を一覧 →</a></p></div>
+      <div class="card" id="sm-items"><h2>整理後の項目数(ファイル + フォルダ)</h2><p class="muted">計算中…</p></div>
       <div class="cols2">
         <div class="card"><h2>5S チェック</h2>
           <p class="hint">件数をクリックすると該当項目の一覧を表示します。判定の閾値は <a id="sm-settings">⚙ オプション</a> で変更できます(古い: ${st.oldYears}年 / パス長: ${st.pathLimit}文字 / 深い階層: ${st.deepDepth}階層以上 / 項目過多: ${st.manyFiles})。</p>
@@ -1582,6 +1619,7 @@ Views.summary = {
     $$('tr.click[data-deep]', el).forEach(tr => tr.onclick = () => show('list', { check: 'deep' }));
     $$('a[data-tag]', el).forEach(a => a.onclick = () => show('list', { tag: a.dataset.tag }));
     $('#sm-settings').onclick = () => Options.open();
+    ItemsCard.load($('#sm-items', el));
     const lh = $('.legend-hold', el); if (lh) lh.onclick = () => show('organize', { filter: 'hold' });
     $$('a[data-owner]', el).forEach(a => a.onclick = () => show('organize', { owner: a.dataset.owner }));
   },
@@ -1793,7 +1831,7 @@ Views.organize = {
     const c = cols({ key: 'name', label: '名前(現在)', w: 400, render: r => nameCell(r, true) }, 'depth', 'size');
     const mode = this.gaugeMode();
     if (mode !== 'off') c.push({
-      key: 'gauge', w: 140, label: mode === 'remain' ? '未処理' : mode === 'root' ? 'サイズ比(全体)' : 'サイズ比(親内)',
+      key: 'gauge', w: 140, label: mode === 'remain' ? '未処理(ファイル数)' : mode === 'root' ? 'サイズ比(全体)' : 'サイズ比(親内)',
       tip: mode === 'remain' ? 'フォルダ内でアクションが未設定のファイルの割合' : mode === 'root' ? 'ルート全体のサイズに占める割合' : '1つ上のフォルダのサイズに占める割合',
       render: r => this.gauge(r, mode),
     });
@@ -1852,7 +1890,8 @@ Views.organize = {
   },
   async updateBar() {
     const [p, w, h] = await Promise.all([api('/api/progress'), api('/api/vwarnings'), api('/api/rulehits')]);
-    $('#org-progress').innerHTML = progressHTML(p);
+    $('#org-progress').innerHTML = progressHTML(p) + '<span class="grow"></span><span id="org-items" class="muted"></span>';
+    api('/api/items').then(e => { const x = $('#org-items'); if (x) x.outerHTML = itemsBadgeHTML(e); }, () => { });
     const lh = $('#org-progress .legend-hold'); if (lh) lh.onclick = guard(() => this.setFilter('hold'));
     $('#vt-warn').hidden = !w.length;
     $('#vt-warn').textContent = `⚠ 似た名前 ${w.length}組`;

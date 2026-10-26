@@ -25,6 +25,7 @@ type Store struct {
 	vviol      []RuleViolation // 整理後の構成のルール違反(キャッシュ)
 	gen        int64           // 編集のたびに増える(キャッシュの判定用)
 	vviolMu    sync.Mutex      // ルール違反の計算は同時に1つだけ
+	items      *itemCache      // 整理後の項目数の見込み(キャッシュ)
 	tf         map[string]*TreeFilter
 }
 

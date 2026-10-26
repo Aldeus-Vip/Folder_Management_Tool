@@ -143,6 +143,19 @@ func (a *App) Handler() http.Handler {
 			}
 			return s.SetMigrationScope(q.Mode, q.Exts, q.Paths)
 		}),
+		"GET /api/items": a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) { return s.EstimateItems() }),
+		"POST /api/itemlimit": a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) {
+			var q struct {
+				Limit int64 `json:"limit"`
+			}
+			if err := decode(r, &q); err != nil {
+				return nil, err
+			}
+			if err := s.SetItemLimit(q.Limit); err != nil {
+				return nil, badRequest("%v", err)
+			}
+			return s.EstimateItems()
+		}),
 		"GET /api/owners":    a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) { return s.Owners() }),
 		"GET /api/vwarnings": a.withStore(a.apiVWarnings),
 		"POST /api/vcreate":  a.withEdit(a.apiVCreate),
