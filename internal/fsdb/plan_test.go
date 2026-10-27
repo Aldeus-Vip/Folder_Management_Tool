@@ -911,3 +911,62 @@ func TestMigrationScope(t *testing.T) {
 		t.Fatal("include")
 	}
 }
+
+// 整理後の項目数(ファイル + フォルダ)の見込み
+func TestEstimateItems(t *testing.T) {
+	s, ids := testDB(t)
+	e, _ := s.EstimateItems()
+	if e.Current != (FileFolder{7, 6}) || e.Total != 13 || e.Limit != DefaultItemLimit || e.Over >= 0 {
+		t.Fatalf("initial: %+v", e)
+	}
+	v, _, _ := s.VCreate(VRoot, "010_経理", "x")
+	s.PlanMove([]int64{ids["経理"]}, v, "x") // フォルダ3・ファイル4
+	s.PlanDelete([]int64{ids[`総務\古い`]}, "x")
+	e, _ = s.EstimateItems()
+	// 仮想フォルダ1 + 移動7 + 残る(ルート・総務・規程.docx・readme.txt)4
+	if e.VFolders != 1 || e.Moved != (FileFolder{4, 3}) || e.Deleted != (FileFolder{1, 1}) || e.Kept != (FileFolder{2, 2}) || e.Total != 12 {
+		t.Fatalf("after: %+v", e)
+	}
+	// 規程.docx も移動すると総務は空になって残らない。readme.txt を保留
+	s.PlanMove([]int64{ids[`総務\規程.docx`]}, v, "x")
+	s.PlanHold([]int64{ids["readme.txt"]}, "x")
+	s.SetItemLimit(10)
+	e, _ = s.EstimateItems()
+	if e.Emptied != 1 || e.Held != (FileFolder{1, 0}) || e.Kept != (FileFolder{0, 1}) || e.Total != 11 || e.Over != 1 {
+		t.Fatalf("emptied: %+v", e)
+	}
+}
+
+// フォルダの項目数(自身 + 配下のファイル・フォルダ)
+func TestItemCounts(t *testing.T) {
+	s, ids := testDB(t)
+	if n := node(t, s, ids["経理"]); n.InnerItems != 7 || n.Files+n.Dirs+1 != 7 {
+		t.Fatalf("経理: %d (fc %d dc %d)", n.InnerItems, n.Files, n.Dirs)
+	}
+	if n := node(t, s, ids["readme.txt"]); n.InnerItems != 1 {
+		t.Fatal("file")
+	}
+	v, _, _ := s.VCreate(VRoot, "010_経理", "x")
+	w, _, _ := s.VCreate(v, "020_請求", "x")
+	s.PlanMove([]int64{ids["経理"]}, v, "x")
+	s.PlanDelete([]int64{ids[`経理\2023`]}, "x") // 2023 と中の2ファイルは移らない
+	s.PlanMove([]int64{ids["readme.txt"]}, w, "x")
+	if n := node(t, s, ids["経理"]); n.InnerItems != 4 {
+		t.Fatalf("inner: %d", n.InnerItems)
+	}
+	rows, _ := s.VChildren(VRoot)
+	// 010_経理 = 自身1 + 020_請求(1 + readme 1) + 経理(4) = 7
+	if len(rows) != 1 || rows[0].Items != 7 {
+		t.Fatalf("vfolder: %+v", rows)
+	}
+	root, _ := s.VNode(VRoot)
+	if root.Items != 7 {
+		t.Fatalf("root: %d", root.Items)
+	}
+	kids, _ := s.VChildren(v)
+	for _, r := range kids {
+		if r.Name == "経理" && r.Items != 4 || r.Name == "020_請求" && r.Items != 2 {
+			t.Fatalf("kids: %+v", r)
+		}
+	}
+}

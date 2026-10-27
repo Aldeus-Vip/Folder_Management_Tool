@@ -25,6 +25,7 @@ type Store struct {
 	vviol      []RuleViolation // 整理後の構成のルール違反(キャッシュ)
 	gen        int64           // 編集のたびに増える(キャッシュの判定用)
 	vviolMu    sync.Mutex      // ルール違反の計算は同時に1つだけ
+	items      *itemCache      // 整理後の項目数の見込み(キャッシュ)
 	tf         map[string]*TreeFilter
 }
 
@@ -162,6 +163,8 @@ type Node struct {
 	// 配下のうち、個別に別のアクションが設定された部分を除いたファイル数・サイズ(仮想ツリーでの件数)
 	Inner  int64 `json:"inner"`
 	InnerS int64 `json:"innerS"`
+	// 同じ範囲の項目数(ファイル + フォルダ。自身を含む)
+	InnerItems int64 `json:"innerItems"`
 }
 
 const nodeCols = `n.id, COALESCE(n.parent_id,0), n.end_id, n.depth, n.is_dir, n.name, n.ext, n.size, n.mtime,

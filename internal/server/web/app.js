@@ -501,6 +501,12 @@ const COL = {
   ext: { key: 'ext', label: '拡張子', w: 60, render: r => esc(r.x), sort: true },
   mtime: { key: 'mtime', label: '更新日時', w: 124, render: r => fmtDate(r.m), sort: true, descFirst: true },
   size: { key: 'size', label: 'サイズ', w: 80, cls: 'num', render: r => r.dir && (r.f & FL.access) ? `<span class="muted" title="${esc(r.err || 'アクセス不可')}">不明</span>` : fmtSize(r.s), sort: true, descFirst: true },
+  // 項目数 = フォルダ自身 + 配下のファイル・フォルダ(移行先の項目数の上限に関係する)
+  items: {
+    key: 'items', label: '項目数', w: 80, cls: 'num', tip: 'フォルダ自身 + 配下のファイル・フォルダの数(移行先の項目数の上限の確認用)',
+    render: r => !r.dir ? '' : (r.f & FL.access) ? `<span class="muted" title="${esc(r.err || 'アクセス不可')}">不明</span>`
+      : `<span title="フォルダ ${fmtNum(r.dc + 1)}(自身を含む) / ファイル ${fmtNum(r.fc)}">${fmtNum(1 + r.fc + r.dc)}</span>`,
+  },
   warn: { key: 'warn', label: '警告・整理のヒント', w: 200, render: warnHTML },
   action: { key: 'action', label: 'アクション(移動先)', w: 250, render: actHTML, sort: true },
   tags: { key: 'tags', label: 'タグ', w: 140, render: r => tagsHTML(r.tags) },
@@ -657,6 +663,42 @@ function migrationEstimateHTML(e) {
     ${e.topExts.length ? `<p class="hint" style="margin-top:6px">Step2 で移動するファイルの拡張子(サイズ順): ${e.topExts.map(x => `${esc(x.label)} ${fmtNum(x.count)}件・${fmtSize(x.size)}`).join(' / ')}</p>` : ''}`;
 }
 
+// ===== 整理後の項目数(ファイル + フォルダ)。移行先の上限(例: 900,000)と比べる =====
+function itemsBadgeHTML(e) {
+  const over = e.over > 0;
+  return `<span class="b ${over ? 'mig' : 'org'}" style="${over ? '' : 'background:var(--green-bg);color:var(--green)'}" title="設定したアクションを反映した、整理後に残るファイル + フォルダの数(サマリーに内訳)">整理後の見込み ${fmtNum(e.total)} / 上限 ${fmtNum(e.limit)}${over ? `(${fmtNum(e.over)} 超過)` : ''}</span>`;
+}
+const ItemsCard = {
+  async load(el) {
+    if (!el) return;
+    const e = await api('/api/items').catch(err => { el.innerHTML = `<p class="muted">${esc(err.message)}</p>`; });
+    if (e) this.render(el, e);
+  },
+  render(el, e) {
+    const ff = f => `<td class="num">${fmtNum(f.files)}</td><td class="num">${fmtNum(f.folders)}</td><td class="num"><b>${fmtNum(f.files + f.folders)}</b></td>`;
+    const p = Math.min(100, pct(e.total, e.limit));
+    el.innerHTML = `<h2>整理後の項目数(ファイル + フォルダ)</h2>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <div class="tr" style="width:240px;height:12px;background:var(--track);border-radius:6px;overflow:hidden"><i style="display:block;height:100%;width:${p}%;background:${e.over > 0 ? 'var(--red)' : 'var(--bar)'}"></i></div>
+        <span>整理後の見込み <b>${fmtNum(e.total)}</b> / 上限 ${fmtNum(e.limit)} 項目</span>
+        ${e.over > 0 ? `<span class="b mig">${fmtNum(e.over)} 項目の削減が必要</span>` : `<span class="b" style="background:var(--green-bg);color:var(--green)">上限内(あと ${fmtNum(-e.over)} 項目)</span>`}
+        <span class="muted">現在 ${fmtNum(e.current.files + e.current.folders)} 項目</span>
+        <span class="grow"></span><label>上限 <input type="number" id="it-limit" value="${e.limit}" min="1" style="width:110px"></label><button id="it-save">変更</button>
+      </div>
+      <table class="t" style="margin-top:8px"><tr><th></th><th class="num">ファイル</th><th class="num">フォルダ</th><th class="num">合計</th></tr>
+        <tr><td>現在(スキャン時点)</td>${ff(e.current)}</tr>
+        <tr><td>新構成: 仮想フォルダ</td><td></td><td class="num">${fmtNum(e.vfolders)}</td><td class="num"><b>${fmtNum(e.vfolders)}</b></td></tr>
+        <tr><td>新構成: 移動する項目</td>${ff(e.moved)}</tr>
+        <tr><td>今の場所に残る: 未処理</td>${ff(e.kept)}</tr>
+        <tr><td>今の場所に残る: 保留</td>${ff(e.held)}</tr>
+        <tr class="muted"><td>削除で減る</td>${ff(e.deleted)}</tr>
+        <tr class="muted"><td>空になって残らない旧フォルダ</td><td></td><td class="num">${fmtNum(e.emptied)}</td><td class="num">${fmtNum(e.emptied)}</td></tr></table>
+      <p class="hint">整理後の見込み = 仮想フォルダ + 移動する項目 + 未処理 + 保留。中身をすべて移動・削除したフォルダは残さない前提です(元から空のフォルダ・アクセスできなかったフォルダは残るものとして数えます)。<br>
+      複数の部門で上限を共有する場合は、各部門のDBの見込みを合計するか、「データ取り込み → ② 複数のDBを統合」で1つにまとめたDBで確認してください。</p>`;
+    $('#it-save', el).onclick = guard(async () => { this.render(el, await api('/api/itemlimit', { limit: +$('#it-limit', el).value })); toast('上限を変更しました'); });
+  },
+};
+
 // ===== 作業者コード(誰の変更かを記録する。複数人で編集するときの統合に使う) =====
 const CodeGate = {
   prompt() {
@@ -769,7 +811,7 @@ const Props = {
       <dl class="props"><dt>種類</dt><dd>${r.dir ? 'フォルダ' : 'ファイル' + (r.x ? ` (.${esc(r.x)})` : '')}</dd>
       <dt>サイズ</dt><dd>${unk ? '不明' : `${fmtSize(r.s)} <span class="muted">(${fmtNum(r.s)} バイト)</span>`}</dd>
       <dt>更新日時</dt><dd>${fmtDate(r.m) || '-'}</dd>
-      ${r.dir ? `<dt>配下</dt><dd>${unk ? '不明' : `ファイル ${fmtNum(n.fc)} / フォルダ ${fmtNum(n.dc)}`}</dd><dt>未処理</dt><dd>${unk ? '不明' : fmtNum(r.rem) + ' ファイル'}</dd>` : ''}
+      ${r.dir ? `<dt>配下</dt><dd>${unk ? '不明' : `ファイル ${fmtNum(n.fc)} / フォルダ ${fmtNum(n.dc)}(項目数 ${fmtNum(1 + n.fc + n.dc)}: 自身を含む)`}</dd><dt>未処理</dt><dd>${unk ? '不明' : fmtNum(r.rem) + ' ファイル'}</dd>` : ''}
       <dt>階層 / パス長</dt><dd>${r.realD ?? r.d} / ${r.pl}文字</dd>
       <dt>警告・ヒント</dt><dd>${warnHTML(n.f !== undefined ? n : r) || '<span class="muted">なし</span>'}</dd>
       <dt>整理アクション</dt><dd>${st}${r.ed ? ` <span class="muted">(${esc(r.ed)})</span>` : ''}</dd>
@@ -790,7 +832,7 @@ const Props = {
     modal(`<h2>🗂 プロパティ(整理後のフォルダ)</h2><div style="font-weight:600">${esc(isRoot ? vroot() : v.n)}</div>
       <div class="path">${esc(vpathLabel(v.vpath))}</div>
       <dl class="props"><dt>実際の場所</dt><dd>${S.rules?.basePath ? esc(S.rules.basePath + (v.vpath ? '\\' + v.vpath : '')) : '<span class="muted">未設定(⚙ オプション)</span>'}</dd>
-      <dt>配下のファイル</dt><dd>${fmtNum(v.fc)} (${fmtSize(v.s)})</dd><dt>直下の項目</dt><dd>${fmtNum(v.cc)}</dd><dt>階層</dt><dd>${v.d}</dd>
+      <dt>配下のファイル</dt><dd>${fmtNum(v.fc)} (${fmtSize(v.s)})</dd><dt>項目数(整理後)</dt><dd>${fmtNum(v.items)} <span class="muted">(${isRoot ? 'ルート自身は含まない' : '自身を含む'}ファイル + フォルダ)</span></dd><dt>直下の項目</dt><dd>${fmtNum(v.cc)}</dd><dt>階層</dt><dd>${v.d}</dd>
       ${v.ed ? `<dt>作成・変更</dt><dd>${esc(v.ed)}</dd>` : ''}
       <dt>メモ</dt><dd style="white-space:pre-wrap">${esc(v.memo) || '<span class="muted">なし</span>'}</dd></dl>
       ${v.sim?.length ? `<div class="issue"><b>⚠ 同じ階層に似た名前のフォルダがあります</b><ul>${v.sim.map(x => `<li>${esc(x)}</li>`).join('')}</ul>目的が同じなら1つにまとめることを検討してください。</div>` : ''}
@@ -1550,8 +1592,9 @@ Views.summary = {
         <div class="stat"><div class="k">最大階層</div><div class="v">${sm.maxDepth}</div></div>
         <div class="stat"><div class="k">データ取得</div><div class="v" style="font-size:13px">${srcLabel(m)}<br>${esc(m.scanned_at || m.merged_at || m.built_at)}</div></div>
       </div>
-      <div class="card"><h2>整理の進み具合</h2>${progressHTML(sm.progress)}
+      <div class="card"><h2>整理の進み具合 <span class="muted" style="font-size:12px;font-weight:400">(ファイル数で計算。フォルダは含みません)</span></h2>${progressHTML(sm.progress)}
         <p><a onclick="show('organize')">整理画面を開く →</a> ・ <a onclick="show('list', {state: 'unhandled'})">未処理の項目を一覧 →</a></p></div>
+      <div class="card" id="sm-items"><h2>整理後の項目数(ファイル + フォルダ)</h2><p class="muted">計算中…</p></div>
       <div class="cols2">
         <div class="card"><h2>5S チェック</h2>
           <p class="hint">件数をクリックすると該当項目の一覧を表示します。判定の閾値は <a id="sm-settings">⚙ オプション</a> で変更できます(古い: ${st.oldYears}年 / パス長: ${st.pathLimit}文字 / 深い階層: ${st.deepDepth}階層以上 / 項目過多: ${st.manyFiles})。</p>
@@ -1582,6 +1625,7 @@ Views.summary = {
     $$('tr.click[data-deep]', el).forEach(tr => tr.onclick = () => show('list', { check: 'deep' }));
     $$('a[data-tag]', el).forEach(a => a.onclick = () => show('list', { tag: a.dataset.tag }));
     $('#sm-settings').onclick = () => Options.open();
+    ItemsCard.load($('#sm-items', el));
     const lh = $('.legend-hold', el); if (lh) lh.onclick = () => show('organize', { filter: 'hold' });
     $$('a[data-owner]', el).forEach(a => a.onclick = () => show('organize', { owner: a.dataset.owner }));
   },
@@ -1625,6 +1669,8 @@ Views.organize = {
         { key: 'name', label: '名前(整理後)', w: 300, render: r => nameCell(r, true, r.uuid === 'root' ? vroot() : r.n) + (r.nn && r.kind !== 'vdir' ? ` <span class="muted" title="元の名前">(元: ${esc(r.node.n)})</span>` : '') },
         { key: 'fc', label: 'ファイル', w: 70, cls: 'num', render: r => r.kind === 'file' || r.kind === 'vlink' ? '' : fmtNum(r.fc) },
         { key: 's', label: 'サイズ', w: 80, cls: 'num', render: r => r.kind === 'vlink' ? '' : fmtSize(r.s) },
+        { key: 'items', label: '項目数', w: 80, cls: 'num', tip: '整理後の項目数: フォルダ自身 + 配下のファイル・フォルダ(仮想フォルダ・移動した項目。削除・別の場所へ移動する分は除く)',
+          render: r => r.kind === 'file' || r.kind === 'vlink' ? '' : `<span title="ファイル ${fmtNum(r.fc)} / フォルダ ${fmtNum(r.items - r.fc)}${r.uuid === 'root' ? '(ルート自身は含まない)' : '(自身を含む)'}">${fmtNum(r.items)}</span>` },
         { key: 'tags', label: 'タグ', w: 120, render: r => tagsHTML(r.tags) },
         { key: 'owner', label: '担当', w: 150, render: ownerHTML },
         { key: 'due', label: '期限', w: 96, render: r => dueHTML(r.due) },
@@ -1790,10 +1836,10 @@ Views.organize = {
   },
   gaugeMode() { return store.get('fm-gauge2', 'remain'); },
   columns() {
-    const c = cols({ key: 'name', label: '名前(現在)', w: 400, render: r => nameCell(r, true) }, 'depth', 'size');
+    const c = cols({ key: 'name', label: '名前(現在)', w: 400, render: r => nameCell(r, true) }, 'depth', 'size', 'items');
     const mode = this.gaugeMode();
     if (mode !== 'off') c.push({
-      key: 'gauge', w: 140, label: mode === 'remain' ? '未処理' : mode === 'root' ? 'サイズ比(全体)' : 'サイズ比(親内)',
+      key: 'gauge', w: 140, label: mode === 'remain' ? '未処理(ファイル数)' : mode === 'root' ? 'サイズ比(全体)' : 'サイズ比(親内)',
       tip: mode === 'remain' ? 'フォルダ内でアクションが未設定のファイルの割合' : mode === 'root' ? 'ルート全体のサイズに占める割合' : '1つ上のフォルダのサイズに占める割合',
       render: r => this.gauge(r, mode),
     });
@@ -1852,7 +1898,8 @@ Views.organize = {
   },
   async updateBar() {
     const [p, w, h] = await Promise.all([api('/api/progress'), api('/api/vwarnings'), api('/api/rulehits')]);
-    $('#org-progress').innerHTML = progressHTML(p);
+    $('#org-progress').innerHTML = progressHTML(p) + '<span class="grow"></span><span id="org-items" class="muted"></span>';
+    api('/api/items').then(e => { const x = $('#org-items'); if (x) x.outerHTML = itemsBadgeHTML(e); }, () => { });
     const lh = $('#org-progress .legend-hold'); if (lh) lh.onclick = guard(() => this.setFilter('hold'));
     $('#vt-warn').hidden = !w.length;
     $('#vt-warn').textContent = `⚠ 似た名前 ${w.length}組`;
@@ -1903,7 +1950,7 @@ Views.list = {
   reset() {
     if (!this.grid) {
       this.grid = new Grid($('#ls-grid'), {
-        columns: cols({ key: 'name', label: '名前', w: 240, sort: true, render: r => nameCell(r, false) }, 'depth', 'kind', 'ext', 'mtime', 'size', 'action', 'owner', 'tags', 'due', 'warn', 'path'),
+        columns: cols({ key: 'name', label: '名前', w: 240, sort: true, render: r => nameCell(r, false) }, 'depth', 'kind', 'ext', 'mtime', 'size', 'items', 'action', 'owner', 'tags', 'due', 'warn', 'path'),
         rowClass,
         onSelect: rows => Sel.set(rows, this.grid),
         onOpen: guard(r => r.dir ? Nav.go('tree', r) : openFile(r)),
