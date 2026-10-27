@@ -163,6 +163,8 @@ type Node struct {
 	// 配下のうち、個別に別のアクションが設定された部分を除いたファイル数・サイズ(仮想ツリーでの件数)
 	Inner  int64 `json:"inner"`
 	InnerS int64 `json:"innerS"`
+	// 同じ範囲の項目数(ファイル + フォルダ。自身を含む)
+	InnerItems int64 `json:"innerItems"`
 }
 
 const nodeCols = `n.id, COALESCE(n.parent_id,0), n.end_id, n.depth, n.is_dir, n.name, n.ext, n.size, n.mtime,

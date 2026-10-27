@@ -936,3 +936,37 @@ func TestEstimateItems(t *testing.T) {
 		t.Fatalf("emptied: %+v", e)
 	}
 }
+
+// フォルダの項目数(自身 + 配下のファイル・フォルダ)
+func TestItemCounts(t *testing.T) {
+	s, ids := testDB(t)
+	if n := node(t, s, ids["経理"]); n.InnerItems != 7 || n.Files+n.Dirs+1 != 7 {
+		t.Fatalf("経理: %d (fc %d dc %d)", n.InnerItems, n.Files, n.Dirs)
+	}
+	if n := node(t, s, ids["readme.txt"]); n.InnerItems != 1 {
+		t.Fatal("file")
+	}
+	v, _, _ := s.VCreate(VRoot, "010_経理", "x")
+	w, _, _ := s.VCreate(v, "020_請求", "x")
+	s.PlanMove([]int64{ids["経理"]}, v, "x")
+	s.PlanDelete([]int64{ids[`経理\2023`]}, "x") // 2023 と中の2ファイルは移らない
+	s.PlanMove([]int64{ids["readme.txt"]}, w, "x")
+	if n := node(t, s, ids["経理"]); n.InnerItems != 4 {
+		t.Fatalf("inner: %d", n.InnerItems)
+	}
+	rows, _ := s.VChildren(VRoot)
+	// 010_経理 = 自身1 + 020_請求(1 + readme 1) + 経理(4) = 7
+	if len(rows) != 1 || rows[0].Items != 7 {
+		t.Fatalf("vfolder: %+v", rows)
+	}
+	root, _ := s.VNode(VRoot)
+	if root.Items != 7 {
+		t.Fatalf("root: %d", root.Items)
+	}
+	kids, _ := s.VChildren(v)
+	for _, r := range kids {
+		if r.Name == "経理" && r.Items != 4 || r.Name == "020_請求" && r.Items != 2 {
+			t.Fatalf("kids: %+v", r)
+		}
+	}
+}

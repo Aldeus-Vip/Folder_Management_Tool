@@ -82,7 +82,22 @@ func nowStr() string { return time.Now().Format("2006/01/02 15:04:05") }
 
 type prefix struct {
 	files []int32 // files[i] = ID が i 以下のファイル数
+	nodes []int32 // nodes[i] = ID が i 以下の項目数(ファイル + フォルダ)
 	size  []int64
+}
+
+// items は区間 [a, b] の項目数(ファイル + フォルダ)。
+func (p *prefix) items(a, b int64) int64 {
+	if a < 1 {
+		a = 1
+	}
+	if b >= int64(len(p.nodes)) {
+		b = int64(len(p.nodes)) - 1
+	}
+	if a > b {
+		return 0
+	}
+	return int64(p.nodes[b] - p.nodes[a-1])
 }
 
 func (p *prefix) count(a, b int64) (int64, int64) { // 区間 [a, b] のファイル数・サイズ
@@ -187,8 +202,8 @@ type ownerIndex struct {
 }
 
 type kidGroup struct {
-	ids        []int64
-	files, siz []int64 // 累積(長さ len(ids)+1)
+	ids               []int64
+	files, siz, items []int64 // 累積(長さ len(ids)+1)。items は項目数(ファイル + フォルダ)
 }
 
 func (s *Store) loadPrefix() error {
@@ -199,7 +214,7 @@ func (s *Store) loadPrefix() error {
 	if err := s.DB.QueryRow(`SELECT max(id) FROM nodes`).Scan(&n); err != nil {
 		return err
 	}
-	p := &prefix{files: make([]int32, n+1), size: make([]int64, n+1)}
+	p := &prefix{files: make([]int32, n+1), nodes: make([]int32, n+1), size: make([]int64, n+1)}
 	rows, err := s.DB.Query(`SELECT id, is_dir, size FROM nodes ORDER BY id`)
 	if err != nil {
 		return err
@@ -213,9 +228,9 @@ func (s *Store) loadPrefix() error {
 			return err
 		}
 		for k := prev + 1; k < id; k++ {
-			p.files[k], p.size[k] = p.files[k-1], p.size[k-1]
+			p.files[k], p.nodes[k], p.size[k] = p.files[k-1], p.nodes[k-1], p.size[k-1]
 		}
-		p.files[id], p.size[id] = p.files[id-1], p.size[id-1]
+		p.files[id], p.nodes[id], p.size[id] = p.files[id-1], p.nodes[id-1]+1, p.size[id-1]
 		if !dir {
 			p.files[id]++
 			p.size[id] += size
@@ -251,13 +266,14 @@ func (s *Store) ensureIndex() error {
 			pi.acts, pi.vps = append(pi.acts, act), append(pi.vps, vp)
 			g := pi.kids[enc]
 			if g == nil {
-				g = &kidGroup{files: []int64{0}, siz: []int64{0}}
+				g = &kidGroup{files: []int64{0}, siz: []int64{0}, items: []int64{0}}
 				pi.kids[enc] = g
 			}
 			f, sz := s.pre.count(id, end)
 			g.ids = append(g.ids, id)
 			g.files = append(g.files, g.files[len(g.files)-1]+f)
 			g.siz = append(g.siz, g.siz[len(g.siz)-1]+sz)
+			g.items = append(g.items, g.items[len(g.items)-1]+s.pre.items(id, end))
 		}
 		rows.Close()
 		s.pidx = pi
@@ -321,6 +337,21 @@ func (s *Store) inner(id, end int64, isDir bool, size int64) (int64, int64) {
 	return f, sz
 }
 
+// innerItems は inner と同じ範囲の項目数(ファイル + フォルダ。自身を含む)。
+func (s *Store) innerItems(id, end int64, isDir bool) int64 {
+	if !isDir {
+		return 1
+	}
+	pi := s.pidx
+	n := s.pre.items(id, end)
+	if g := pi.kids[pi.nearest(id)]; g != nil {
+		lo := sort.Search(len(g.ids), func(k int) bool { return g.ids[k] > id })
+		hi := sort.Search(len(g.ids), func(k int) bool { return g.ids[k] > end })
+		n -= g.items[hi] - g.items[lo]
+	}
+	return n
+}
+
 // enrich は継承されたアクション・移動先パス・未処理件数を埋める。
 func (s *Store) enrich(ns []Node) error {
 	if len(ns) == 0 {
@@ -355,6 +386,7 @@ func (s *Store) enrich(ns []Node) error {
 			x.Flags = x.Flags&^nameFlagMask | NameFlags(x.NewName, x.IsDir)
 		}
 		x.Inner, x.InnerS = s.inner(x.ID, x.End, x.IsDir, x.Size)
+		x.InnerItems = s.innerItems(x.ID, x.End, x.IsDir)
 		if x.Action == "" && x.IAction == "" {
 			x.Rem, x.RemS = x.Inner, x.InnerS
 		}
@@ -570,6 +602,7 @@ type VRow struct {
 	Path    string   `json:"vpath"` // 仮想パス
 	Depth   int      `json:"d"`
 	Files   int64    `json:"fc"`
+	Items   int64    `json:"items"` // 項目数(ファイル + フォルダ。自身を含む)
 	Size    int64    `json:"s"`
 	Kids    int      `json:"cc"` // 直下の項目数
 	Memo    string   `json:"memo,omitempty"`
@@ -584,8 +617,8 @@ type VRow struct {
 }
 
 type vstat struct {
-	files, size int64
-	direct      int
+	files, size, items int64 // items: 項目数(ファイル + フォルダ。仮想フォルダ自身を含む)
+	direct             int
 }
 
 // vStats は各仮想フォルダの合計(配下の仮想フォルダ・配置された項目を含む)を計算する。ロック中に呼ぶ。
@@ -608,11 +641,13 @@ func (s *Store) vStats() map[string]*vstat {
 		} else {
 			f, sz = s.pre.count(pi.ids[k], pi.ids[k])
 		}
+		items := s.innerItems(pi.ids[k], pi.ends[k], pi.ends[k] > pi.ids[k])
 		get(pi.vps[k]).direct++
 		for n := vt.nodes[pi.vps[k]]; n != nil; n = vt.nodes[n.Parent] {
 			x := get(n.UUID)
 			x.files += f
 			x.size += sz
+			x.items += items
 			if n.UUID == VRoot {
 				break
 			}
@@ -620,6 +655,16 @@ func (s *Store) vStats() map[string]*vstat {
 	}
 	for _, n := range vt.nodes {
 		get(n.UUID).direct += len(n.kids) + len(n.links)
+		if n.UUID == VRoot || n.Link != "" {
+			continue
+		}
+		// 仮想フォルダ自身を、自身と上位の仮想フォルダの項目数に加える(ルートは数えない)
+		for a := n; a != nil; a = vt.nodes[a.Parent] {
+			get(a.UUID).items++
+			if a.UUID == VRoot {
+				break
+			}
+		}
 	}
 	return st
 }
@@ -630,7 +675,7 @@ func (s *Store) vfolderRow(n *vnode, st map[string]*vstat) VRow {
 		x = &vstat{}
 	}
 	r := VRow{Key: "v:" + n.UUID, Kind: "vdir", UUID: n.UUID, Parent: n.Parent, Name: n.Name, Path: s.vt.path(n.UUID), Depth: n.Depth,
-		Files: x.files, Size: x.size, Kids: x.direct, Memo: n.Memo, Editor: n.Editor}
+		Files: x.files, Size: x.size, Items: x.items, Kids: x.direct, Memo: n.Memo, Editor: n.Editor}
 	if n.UUID == VRoot {
 		r.Path = ""
 	} else {
@@ -728,7 +773,7 @@ func (s *Store) VChildren(uuid string) ([]VRow, error) {
 			kind = "dir"
 		}
 		out = append(out, VRow{Key: fmt.Sprintf("n:%d", x.ID), Kind: kind, Name: name, Depth: n.Depth + 1,
-			Files: x.Inner, Size: x.InnerS, Kids: int(x.Children), Node: x, Rule: rules.rowRule(x.IsDir, n.Depth+1, name, func() []string { return s.realKidDirs(x.ID) })})
+			Files: x.Inner, Size: x.InnerS, Items: x.InnerItems, Kids: int(x.Children), Node: x, Rule: rules.rowRule(x.IsDir, n.Depth+1, name, func() []string { return s.realKidDirs(x.ID) })})
 	}
 	sortVRows(out)
 	// 同じ階層の似た名前(フォルダ同士)。項目が多いときは、仮想フォルダが絡む組だけを調べる
@@ -771,7 +816,7 @@ func (s *Store) VReal(id int64, depth int) ([]VRow, error) {
 		if x.IsDir {
 			kind = "dir"
 		}
-		out[i] = VRow{Key: fmt.Sprintf("n:%d", x.ID), Kind: kind, Name: x.Name, Depth: depth + 1, Files: x.Inner, Size: x.InnerS, Kids: int(x.Children), Node: x,
+		out[i] = VRow{Key: fmt.Sprintf("n:%d", x.ID), Kind: kind, Name: x.Name, Depth: depth + 1, Files: x.Inner, Size: x.InnerS, Items: x.InnerItems, Kids: int(x.Children), Node: x,
 			Rule: rules.rowRule(x.IsDir, depth+1, x.Name, func() []string { return s.realKidDirs(x.ID) })}
 	}
 	sortVRows(out)
