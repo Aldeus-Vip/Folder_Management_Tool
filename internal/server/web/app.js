@@ -507,6 +507,15 @@ const COL = {
     render: r => !r.dir ? '' : (r.f & FL.access) ? `<span class="muted" title="${esc(r.err || 'アクセス不可')}">不明</span>`
       : `<span title="フォルダ ${fmtNum(r.dc + 1)}(自身を含む) / ファイル ${fmtNum(r.fc)}">${fmtNum(1 + r.fc + r.dc)}</span>`,
   },
+  // 整理画面(左)用: 「残り / 元」。移動・削除・保留を設定した分は残りから除く
+  itemsRem: {
+    key: 'items', label: '項目数(残り/元)', w: 130, cls: 'num', tip: '残り(未処理の項目数) / 元(スキャン時点。フォルダ自身 + 配下のファイル・フォルダ)。移動・削除・保留を設定した分は残りから除きます',
+    render: r => !r.dir ? '' : (r.f & FL.access) ? `<span class="muted" title="${esc(r.err || 'アクセス不可')}">不明</span>` : fracHTML(r.remItems || 0, 1 + r.fc + r.dc, fmtNum),
+  },
+  sizeRem: {
+    key: 'size', label: 'サイズ(残り/元)', w: 160, cls: 'num', sort: true, descFirst: true, tip: '残り(未処理のファイルの合計) / 元(スキャン時点)。移動・削除・保留を設定した分は残りから除きます',
+    render: r => r.dir && (r.f & FL.access) ? `<span class="muted" title="${esc(r.err || 'アクセス不可')}">不明</span>` : !r.dir ? (eff(r) ? `<span class="muted">${fmtSize(r.s)}</span>` : fmtSize(r.s)) : fracHTML(r.remS || 0, r.s, fmtSize),
+  },
   warn: { key: 'warn', label: '警告・整理のヒント', w: 200, render: warnHTML },
   action: { key: 'action', label: 'アクション(移動先)', w: 250, render: actHTML, sort: true },
   tags: { key: 'tags', label: 'タグ', w: 140, render: r => tagsHTML(r.tags) },
@@ -663,10 +672,18 @@ function migrationEstimateHTML(e) {
     ${e.topExts.length ? `<p class="hint" style="margin-top:6px">Step2 で移動するファイルの拡張子(サイズ順): ${e.topExts.map(x => `${esc(x.label)} ${fmtNum(x.count)}件・${fmtSize(x.size)}`).join(' / ')}</p>` : ''}`;
 }
 
+// 「残り / 元」の表示(減った分と割合はマウスを重ねると表示)
+function fracHTML(rem, total, fmt) {
+  const cut = total - rem;
+  const t = cut > 0 ? `元 ${fmt(total)} から ${fmt(cut)} 減(-${pct(cut, total).toFixed(1)}%)` : 'まだ減っていません';
+  return `<span title="${esc(t)}">${cut > 0 ? `<b>${fmt(rem)}</b>` : fmt(rem)}<span class="muted"> / ${fmt(total)}</span></span>`;
+}
+
 // ===== 整理後の項目数(ファイル + フォルダ)。移行先の上限(例: 900,000)と比べる =====
 function itemsBadgeHTML(e) {
-  const over = e.over > 0;
-  return `<span class="b ${over ? 'mig' : 'org'}" style="${over ? '' : 'background:var(--green-bg);color:var(--green)'}" title="設定したアクションを反映した、整理後に残るファイル + フォルダの数(サマリーに内訳)">整理後の見込み ${fmtNum(e.total)} / 上限 ${fmtNum(e.limit)}${over ? `(${fmtNum(e.over)} 超過)` : ''}</span>`;
+  const over = e.over > 0 || (e.sizeLimit > 0 && e.totalSize > e.sizeLimit);
+  const cur = e.current.files + e.current.folders;
+  return `<span class="b ${over ? 'mig' : 'org'}" style="${over ? '' : 'background:var(--green-bg);color:var(--green)'}" title="設定したアクションを反映した、整理後の見込み / 元(スキャン時点)。上限: 項目数 ${fmtNum(e.limit)}${e.sizeLimit ? ' / 容量 ' + fmtSize(e.sizeLimit) : ''}(サマリーに内訳)">整理後 ${fmtNum(e.total)} / ${fmtNum(cur)} 項目 ・ ${fmtSize(e.totalSize)} / ${fmtSize(e.current.size)}${e.over > 0 ? `(項目数の上限を ${fmtNum(e.over)} 超過)` : ''}</span>`;
 }
 const ItemsCard = {
   async load(el) {
@@ -675,27 +692,44 @@ const ItemsCard = {
     if (e) this.render(el, e);
   },
   render(el, e) {
-    const ff = f => `<td class="num">${fmtNum(f.files)}</td><td class="num">${fmtNum(f.folders)}</td><td class="num"><b>${fmtNum(f.files + f.folders)}</b></td>`;
-    const p = Math.min(100, pct(e.total, e.limit));
-    el.innerHTML = `<h2>整理後の項目数(ファイル + フォルダ)</h2>
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <div class="tr" style="width:240px;height:12px;background:var(--track);border-radius:6px;overflow:hidden"><i style="display:block;height:100%;width:${p}%;background:${e.over > 0 ? 'var(--red)' : 'var(--bar)'}"></i></div>
-        <span>整理後の見込み <b>${fmtNum(e.total)}</b> / 上限 ${fmtNum(e.limit)} 項目</span>
-        ${e.over > 0 ? `<span class="b mig">${fmtNum(e.over)} 項目の削減が必要</span>` : `<span class="b" style="background:var(--green-bg);color:var(--green)">上限内(あと ${fmtNum(-e.over)} 項目)</span>`}
-        <span class="muted">現在 ${fmtNum(e.current.files + e.current.folders)} 項目</span>
-        <span class="grow"></span><label>上限 <input type="number" id="it-limit" value="${e.limit}" min="1" style="width:110px"></label><button id="it-save">変更</button>
-      </div>
-      <table class="t" style="margin-top:8px"><tr><th></th><th class="num">ファイル</th><th class="num">フォルダ</th><th class="num">合計</th></tr>
-        <tr><td>現在(スキャン時点)</td>${ff(e.current)}</tr>
-        <tr><td>新構成: 仮想フォルダ</td><td></td><td class="num">${fmtNum(e.vfolders)}</td><td class="num"><b>${fmtNum(e.vfolders)}</b></td></tr>
+    const cur = e.current.files + e.current.folders;
+    // 見込み / 元、減った量、上限との比較
+    const line = (label, now, orig, limit, fmt) => {
+      const cut = orig - now, over = limit > 0 && now > limit;
+      const p = limit > 0 ? Math.min(100, pct(now, limit)) : pct(now, orig);
+      return `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:4px 0">
+        <b style="width:52px">${label}</b>
+        <div class="tr" style="width:200px;height:12px;background:var(--track);border-radius:6px;overflow:hidden" title="${limit > 0 ? '上限に対する割合' : '元に対する割合'}"><i style="display:block;height:100%;width:${p}%;background:${over ? 'var(--red)' : 'var(--bar)'}"></i></div>
+        <span style="font-size:15px"><b>${fmt(now)}</b> <span class="muted">/ 元 ${fmt(orig)}</span></span>
+        <span class="muted">${cut > 0 ? `${fmt(cut)} 減(-${pct(cut, orig).toFixed(1)}%)` : cut < 0 ? `${fmt(-cut)} 増(仮想フォルダの追加など)` : '減っていません'}</span>
+        ${limit > 0 ? (over ? `<span class="b mig">上限 ${fmt(limit)} を ${fmt(now - limit)} 超過</span>` : `<span class="b" style="background:var(--green-bg);color:var(--green)">上限 ${fmt(limit)} まで あと ${fmt(limit - now)}</span>`) : '<span class="muted">上限: 未設定</span>'}
+      </div>`;
+    };
+    const ff = f => `<td class="num">${fmtNum(f.files)}</td><td class="num">${fmtNum(f.folders)}</td><td class="num"><b>${fmtNum(f.files + f.folders)}</b></td><td class="num">${fmtSize(f.size)}</td>`;
+    el.innerHTML = `<h2>整理後の項目数・容量(見込み / 元)</h2>
+      ${line('項目数', e.total, cur, e.limit, fmtNum)}
+      ${line('容量', e.totalSize, e.current.size, e.sizeLimit, fmtSize)}
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
+        <label>項目数の上限 <input type="number" id="it-limit" value="${e.limit}" min="1" style="width:110px"></label>
+        <label>容量の上限 <input type="number" id="it-slimit" value="${e.sizeLimit ? +(e.sizeLimit / 1024 ** 3).toFixed(1) : ''}" min="0" step="0.1" style="width:90px" placeholder="未設定"> GB</label>
+        <button id="it-save">変更</button></div>
+      <table class="t" style="margin-top:8px"><tr><th></th><th class="num">ファイル</th><th class="num">フォルダ</th><th class="num">項目数</th><th class="num">容量</th></tr>
+        <tr><td>元(スキャン時点)</td>${ff(e.current)}</tr>
+        <tr><td>新構成: 仮想フォルダ</td><td></td><td class="num">${fmtNum(e.vfolders)}</td><td class="num"><b>${fmtNum(e.vfolders)}</b></td><td></td></tr>
         <tr><td>新構成: 移動する項目</td>${ff(e.moved)}</tr>
         <tr><td>今の場所に残る: 未処理</td>${ff(e.kept)}</tr>
         <tr><td>今の場所に残る: 保留</td>${ff(e.held)}</tr>
         <tr class="muted"><td>削除で減る</td>${ff(e.deleted)}</tr>
-        <tr class="muted"><td>空になって残らない旧フォルダ</td><td></td><td class="num">${fmtNum(e.emptied)}</td><td class="num">${fmtNum(e.emptied)}</td></tr></table>
-      <p class="hint">整理後の見込み = 仮想フォルダ + 移動する項目 + 未処理 + 保留。中身をすべて移動・削除したフォルダは残さない前提です(元から空のフォルダ・アクセスできなかったフォルダは残るものとして数えます)。<br>
+        <tr class="muted"><td>空になって残らない旧フォルダ</td><td></td><td class="num">${fmtNum(e.emptied)}</td><td class="num">${fmtNum(e.emptied)}</td><td></td></tr></table>
+      <p class="hint">見込み = 仮想フォルダ + 移動する項目 + 未処理 + 保留(容量は移動 + 未処理 + 保留のファイルの合計)。移動した分も含めて、アクションを反映した整理後の数です。<br>
+      中身をすべて移動・削除したフォルダは残さない前提です(元から空のフォルダ・アクセスできなかったフォルダは残るものとして数えます)。<br>
+      整理画面の左の「項目数」「サイズ」は、各フォルダの<b>残り(未処理)/ 元</b>です(移動・削除・保留を設定した分を除いた残り)。<br>
       複数の部門で上限を共有する場合は、各部門のDBの見込みを合計するか、「データ取り込み → ② 複数のDBを統合」で1つにまとめたDBで確認してください。</p>`;
-    $('#it-save', el).onclick = guard(async () => { this.render(el, await api('/api/itemlimit', { limit: +$('#it-limit', el).value })); toast('上限を変更しました'); });
+    $('#it-save', el).onclick = guard(async () => {
+      const gb = +$('#it-slimit', el).value || 0;
+      this.render(el, await api('/api/itemlimit', { limit: +$('#it-limit', el).value, sizeLimit: Math.round(gb * 1024 ** 3) }));
+      toast('上限を変更しました');
+    });
   },
 };
 
@@ -1836,7 +1870,7 @@ Views.organize = {
   },
   gaugeMode() { return store.get('fm-gauge2', 'remain'); },
   columns() {
-    const c = cols({ key: 'name', label: '名前(現在)', w: 400, render: r => nameCell(r, true) }, 'depth', 'size', 'items');
+    const c = cols({ key: 'name', label: '名前(現在)', w: 400, render: r => nameCell(r, true) }, 'depth', 'sizeRem', 'itemsRem');
     const mode = this.gaugeMode();
     if (mode !== 'off') c.push({
       key: 'gauge', w: 140, label: mode === 'remain' ? '未処理(ファイル数)' : mode === 'root' ? 'サイズ比(全体)' : 'サイズ比(親内)',

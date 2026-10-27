@@ -160,6 +160,8 @@ type Node struct {
 	// 未処理(アクション未設定)のファイル数・サイズ。フォルダは配下の合計、親で処理済みなら0
 	Rem  int64 `json:"rem"`
 	RemS int64 `json:"remS"`
+	// 未処理の項目数(ファイル + フォルダ。自身を含む)。アクションを設定した分(移動・削除・保留)を除いた残り
+	RemItems int64 `json:"remItems"`
 	// 配下のうち、個別に別のアクションが設定された部分を除いたファイル数・サイズ(仮想ツリーでの件数)
 	Inner  int64 `json:"inner"`
 	InnerS int64 `json:"innerS"`

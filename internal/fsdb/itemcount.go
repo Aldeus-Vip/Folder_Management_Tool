@@ -20,13 +20,15 @@ const DefaultItemLimit = 900000
 type FileFolder struct {
 	Files   int64 `json:"files"`
 	Folders int64 `json:"folders"`
+	Size    int64 `json:"size"` // ファイルの合計サイズ(バイト)
 }
 
-func (f *FileFolder) add(dir bool) {
+func (f *FileFolder) add(dir bool, size int64) {
 	if dir {
 		f.Folders++
 	} else {
 		f.Files++
+		f.Size += size
 	}
 }
 
@@ -43,6 +45,24 @@ type ItemEstimate struct {
 	Emptied  int64      `json:"emptied"`  // 中身がすべて移動・削除されて空になる旧フォルダ(残さない)
 	Total    int64      `json:"total"`    // 整理後の見込み(仮想フォルダ + 移動 + 未処理 + 保留)
 	Over     int64      `json:"over"`     // 上限を超える数(0 以下なら上限内)
+	// 容量(ファイルの合計サイズ)
+	TotalSize int64 `json:"totalSize"` // 整理後の見込み(移動 + 未処理 + 保留)
+	SizeLimit int64 `json:"sizeLimit"` // 容量の上限(バイト。0 = 指定なし)
+}
+
+func (s *Store) SizeLimit() int64 {
+	var v string
+	s.DB.QueryRow(`SELECT value FROM meta WHERE key='size_limit'`).Scan(&v)
+	n, _ := strconv.ParseInt(v, 10, 64)
+	return n
+}
+
+// SetSizeLimit は容量の上限(バイト。0 = 指定なし)を保存する。
+func (s *Store) SetSizeLimit(n int64) error {
+	if n < 0 {
+		return fmt.Errorf("容量の上限は0以上を指定してください")
+	}
+	return s.SetMeta(map[string]string{"size_limit": strconv.FormatInt(n, 10)})
 }
 
 func (s *Store) ItemLimit() int64 {
@@ -75,10 +95,10 @@ func (s *Store) EstimateItems() (*ItemEstimate, error) {
 		}
 	}
 	s.mu.Unlock()
-	limit := s.ItemLimit()
+	limit, slimit := s.ItemLimit(), s.SizeLimit()
 	if cached != nil && cached.gen == gen {
 		e := cached.est
-		e.Limit, e.Over = limit, e.Total-limit
+		e.Limit, e.Over, e.SizeLimit = limit, e.Total-limit, slimit
 		return &e, nil
 	}
 	var maxID int64
@@ -88,29 +108,29 @@ func (s *Store) EstimateItems() (*ItemEstimate, error) {
 	e := ItemEstimate{VFolders: vf}
 	keep := make([]bool, maxID+1) // 配下に今の場所に残る項目がある
 	// 子 → 親の順(ID の降順)に見て、残る項目があるフォルダを親へ伝える
-	rows, err := s.DB.Query(`SELECT id, COALESCE(parent_id,0), is_dir, flags FROM nodes ORDER BY id DESC`)
+	rows, err := s.DB.Query(`SELECT id, COALESCE(parent_id,0), is_dir, flags, size FROM nodes ORDER BY id DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id, parent int64
+		var id, parent, size int64
 		var dir bool
 		var flags int
-		if err := rows.Scan(&id, &parent, &dir, &flags); err != nil {
+		if err := rows.Scan(&id, &parent, &dir, &flags, &size); err != nil {
 			return nil, err
 		}
-		e.Current.add(dir)
+		e.Current.add(dir, size)
 		act := ""
 		if k := pi.nearest(id); k >= 0 {
 			act = pi.acts[k]
 		}
 		switch act {
 		case ActDelete:
-			e.Deleted.add(dir)
+			e.Deleted.add(dir, size)
 			continue
 		case ActMove:
-			e.Moved.add(dir)
+			e.Moved.add(dir, size)
 			continue
 		}
 		// 元から空のフォルダ・中身が分からないフォルダ(アクセス不可)はそのまま残るものとして数える
@@ -119,9 +139,9 @@ func (s *Store) EstimateItems() (*ItemEstimate, error) {
 			continue
 		}
 		if act == ActHold {
-			e.Held.add(dir)
+			e.Held.add(dir, size)
 		} else {
-			e.Kept.add(dir)
+			e.Kept.add(dir, size)
 		}
 		if parent > 0 && parent <= maxID {
 			keep[parent] = true
@@ -131,12 +151,13 @@ func (s *Store) EstimateItems() (*ItemEstimate, error) {
 		return nil, err
 	}
 	e.Total = e.VFolders + e.Moved.Total() + e.Kept.Total() + e.Held.Total()
+	e.TotalSize = e.Moved.Size + e.Kept.Size + e.Held.Size
 	s.mu.Lock()
 	if s.gen == gen {
 		s.items = &itemCache{gen: gen, est: e}
 	}
 	s.mu.Unlock()
-	e.Limit, e.Over = limit, e.Total-limit
+	e.Limit, e.Over, e.SizeLimit = limit, e.Total-limit, slimit
 	return &e, nil
 }
 

@@ -916,7 +916,7 @@ func TestMigrationScope(t *testing.T) {
 func TestEstimateItems(t *testing.T) {
 	s, ids := testDB(t)
 	e, _ := s.EstimateItems()
-	if e.Current != (FileFolder{7, 6}) || e.Total != 13 || e.Limit != DefaultItemLimit || e.Over >= 0 {
+	if !ffEq(e.Current, 7, 6) || e.Total != 13 || e.Limit != DefaultItemLimit || e.Over >= 0 {
 		t.Fatalf("initial: %+v", e)
 	}
 	v, _, _ := s.VCreate(VRoot, "010_経理", "x")
@@ -924,15 +924,25 @@ func TestEstimateItems(t *testing.T) {
 	s.PlanDelete([]int64{ids[`総務\古い`]}, "x")
 	e, _ = s.EstimateItems()
 	// 仮想フォルダ1 + 移動7 + 残る(ルート・総務・規程.docx・readme.txt)4
-	if e.VFolders != 1 || e.Moved != (FileFolder{4, 3}) || e.Deleted != (FileFolder{1, 1}) || e.Kept != (FileFolder{2, 2}) || e.Total != 12 {
+	if e.VFolders != 1 || !ffEq(e.Moved, 4, 3) || !ffEq(e.Deleted, 1, 1) || !ffEq(e.Kept, 2, 2) || e.Total != 12 {
 		t.Fatalf("after: %+v", e)
+	}
+	// 容量(ファイルは1KBずつ)と、未処理として残る項目数(ルート・総務・規程.docx・readme.txt)
+	if e.Current.Size != 7*1024 || e.Moved.Size != 4*1024 || e.Deleted.Size != 1024 || e.TotalSize != 6*1024 {
+		t.Fatalf("size: %+v", e)
+	}
+	if n := node(t, s, 1); n.RemItems != 4 || n.Files+n.Dirs+1 != 13 {
+		t.Fatalf("remItems: %d inner %d", n.RemItems, n.InnerItems)
+	}
+	if n := node(t, s, ids["経理"]); n.RemItems != 0 {
+		t.Fatal("moved folder has no remaining items")
 	}
 	// 規程.docx も移動すると総務は空になって残らない。readme.txt を保留
 	s.PlanMove([]int64{ids[`総務\規程.docx`]}, v, "x")
 	s.PlanHold([]int64{ids["readme.txt"]}, "x")
 	s.SetItemLimit(10)
 	e, _ = s.EstimateItems()
-	if e.Emptied != 1 || e.Held != (FileFolder{1, 0}) || e.Kept != (FileFolder{0, 1}) || e.Total != 11 || e.Over != 1 {
+	if e.Emptied != 1 || !ffEq(e.Held, 1, 0) || !ffEq(e.Kept, 0, 1) || e.Total != 11 || e.Over != 1 {
 		t.Fatalf("emptied: %+v", e)
 	}
 }
@@ -970,3 +980,5 @@ func TestItemCounts(t *testing.T) {
 		}
 	}
 }
+
+func ffEq(f FileFolder, files, folders int64) bool { return f.Files == files && f.Folders == folders }

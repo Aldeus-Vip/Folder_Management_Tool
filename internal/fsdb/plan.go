@@ -388,7 +388,7 @@ func (s *Store) enrich(ns []Node) error {
 		x.Inner, x.InnerS = s.inner(x.ID, x.End, x.IsDir, x.Size)
 		x.InnerItems = s.innerItems(x.ID, x.End, x.IsDir)
 		if x.Action == "" && x.IAction == "" {
-			x.Rem, x.RemS = x.Inner, x.InnerS
+			x.Rem, x.RemS, x.RemItems = x.Inner, x.InnerS, x.InnerItems
 		}
 	}
 	return nil
