@@ -293,7 +293,8 @@ func (s *Store) FindPath(p string) (int64, error) {
 type Filter struct {
 	Q       string
 	Kind    string // file | dir
-	Ext     string
+	Ext     string // 拡張子(複数可。「,」・空白区切り。拡張子なしは「(なし)」)
+	ExtNot  bool   // true なら Ext に該当するファイルを除く
 	Under   int64
 	MinSize int64
 	MaxSize int64
@@ -311,7 +312,7 @@ type Filter struct {
 func FilterFromQuery(v url.Values) Filter {
 	i64 := func(k string) int64 { n, _ := strconv.ParseInt(v.Get(k), 10, 64); return n }
 	return Filter{
-		Q: strings.TrimSpace(v.Get("q")), Kind: v.Get("kind"), Ext: strings.ToLower(strings.TrimPrefix(strings.TrimSpace(v.Get("ext")), ".")),
+		Q: strings.TrimSpace(v.Get("q")), Kind: v.Get("kind"), Ext: strings.TrimSpace(v.Get("ext")), ExtNot: v.Get("extNot") == "1",
 		Under: i64("under"), MinSize: i64("minSize"), MaxSize: i64("maxSize"), Before: i64("before"),
 		Check: v.Get("check"), State: v.Get("state"), Editor: v.Get("editor"), Tag: v.Get("tag"), Owner: v.Get("owner"), VParent: v.Get("vparent"),
 		Sort: v.Get("sort"), Desc: v.Get("desc") == "1",
@@ -388,11 +389,39 @@ func (s *Store) where(f Filter) (string, []any, error) {
 		add("n.is_dir=1")
 	}
 	if f.Ext != "" {
-		if f.Ext == "(なし)" {
-			add("n.is_dir=0 AND n.ext=''")
-		} else {
-			add("n.ext=?", f.Ext)
+		// 複数指定可(「,」・空白区切り)。ExtNot なら該当するファイルを除く(フォルダは残す)
+		var exts []string
+		for _, x := range strings.FieldsFunc(f.Ext, func(r rune) bool { return r == ',' || r == ' ' || r == '、' || r == '\n' || r == '\t' || r == ';' }) {
+			x = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(halfWidth(x)), "."))
+			if x == "なし" {
+				x = "(なし)"
+			}
+			if x != "" {
+				exts = append(exts, x)
+			}
 		}
+		if len(exts) == 0 {
+			return "", nil, fmt.Errorf("拡張子を読み取れません: %s", f.Ext)
+		}
+		var ors []string
+		var a []any
+		var in []string
+		for _, e := range exts {
+			if e == "(なし)" {
+				ors = append(ors, "n.ext=''")
+				continue
+			}
+			in = append(in, "?")
+			a = append(a, e)
+		}
+		if len(in) > 0 {
+			ors = append(ors, "n.ext IN ("+strings.Join(in, ",")+")")
+		}
+		c := "(n.is_dir=0 AND (" + strings.Join(ors, " OR ") + "))"
+		if f.ExtNot {
+			c = "NOT " + c
+		}
+		add(c, a...)
 	}
 	if f.Under > 0 {
 		var end int64
@@ -481,19 +510,33 @@ func orderBy(f Filter) string {
 }
 
 func (s *Store) Search(f Filter, offset, limit int) ([]Node, int64, error) {
+	ns, st, err := s.SearchWithStats(f, offset, limit)
+	return ns, st.Total, err
+}
+
+// SearchStats は検索結果全体の件数(ファイル・フォルダ別)と、ファイルの合計サイズ。
+type SearchStats struct {
+	Total   int64 `json:"total"`
+	Files   int64 `json:"files"`
+	Folders int64 `json:"folders"`
+	Size    int64 `json:"size"`
+}
+
+func (s *Store) SearchWithStats(f Filter, offset, limit int) ([]Node, SearchStats, error) {
+	var st SearchStats
 	if err := s.ensureIndex(); err != nil {
-		return nil, 0, err
+		return nil, st, err
 	}
 	w, args, err := s.where(f)
 	if err != nil {
-		return nil, 0, err
+		return nil, st, err
 	}
-	var total int64
-	if err := s.DB.QueryRow(`SELECT count(*)`+nodeFrom+` WHERE `+w, args...).Scan(&total); err != nil {
-		return nil, 0, err
+	if err := s.DB.QueryRow(`SELECT count(*), COALESCE(sum(n.is_dir),0), COALESCE(sum(CASE WHEN n.is_dir=0 THEN n.size ELSE 0 END),0)`+nodeFrom+` WHERE `+w, args...).Scan(&st.Total, &st.Folders, &st.Size); err != nil {
+		return nil, st, err
 	}
+	st.Files = st.Total - st.Folders
 	ns, err := s.query(`SELECT `+nodeCols+nodeFrom+` WHERE `+w+orderBy(f)+` LIMIT ? OFFSET ?`, append(args, limit, offset)...)
-	return ns, total, err
+	return ns, st, err
 }
 
 // SearchIDs は検索結果のIDだけを返す(一括設定用。max件を超えたらエラー)。

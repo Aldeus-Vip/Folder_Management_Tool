@@ -361,7 +361,7 @@ class PagedSource {
     this.loading.add(p);
     try {
       const r = await api(this.urlFn(p * this.ps, this.ps));
-      this.pages.set(p, r.rows); this.count = r.total; this.onTotal?.(r.total);
+      this.pages.set(p, r.rows); this.count = r.total; this.onTotal?.(r.total, r);
     } finally { this.loading.delete(p); }
   }
   forEach(fn) { for (const rows of this.pages.values()) rows.forEach(fn); }
@@ -713,6 +713,12 @@ const ItemsCard = {
         <label>項目数の上限 <input type="number" id="it-limit" value="${e.limit}" min="1" style="width:110px"></label>
         <label>容量の上限 <input type="number" id="it-slimit" value="${e.sizeLimit ? +(e.sizeLimit / 1024 ** 3).toFixed(1) : ''}" min="0" step="0.1" style="width:90px" placeholder="未設定"> GB</label>
         <button id="it-save">変更</button></div>
+      <div style="margin-top:6px;padding:6px 8px;background:var(--bg);border-radius:8px">
+        <label class="inl" style="margin:0"><input type="checkbox" id="it-dropon" ${e.dropOn ? 'checked' : ''}> <b>移行しない拡張子</b>のファイルを見込みから除く(試算)</label>
+        <div style="display:flex;gap:6px;margin-top:4px"><input type="text" id="it-drop" style="flex:1" value="${esc(e.dropExts.join(', '))}" placeholder="例: jpg, png, mp4, zip(「,」・空白区切り。Excel の表の貼り付けも可)">
+          <button id="it-droppick" title="作業指示CSVの「初動移行の範囲」で除外にした拡張子を入れる">除外リストから</button></div>
+        ${e.dropOn ? `<p class="hint" style="margin:4px 0 0">除いた分: ファイル ${fmtNum(e.dropped.files)} 件・${fmtSize(e.dropped.size)}(削除を設定した分は「削除で減る」に含めます)。中身がこれだけのフォルダは空になるので、残さないものとして数えます。</p>` : ''}
+      </div>
       <table class="t" style="margin-top:8px"><tr><th></th><th class="num">ファイル</th><th class="num">フォルダ</th><th class="num">項目数</th><th class="num">容量</th></tr>
         <tr><td>元(スキャン時点)</td>${ff(e.current)}</tr>
         <tr><td>新構成: 仮想フォルダ</td><td></td><td class="num">${fmtNum(e.vfolders)}</td><td class="num"><b>${fmtNum(e.vfolders)}</b></td><td></td></tr>
@@ -720,15 +726,25 @@ const ItemsCard = {
         <tr><td>今の場所に残る: 未処理</td>${ff(e.kept)}</tr>
         <tr><td>今の場所に残る: 保留</td>${ff(e.held)}</tr>
         <tr class="muted"><td>削除で減る</td>${ff(e.deleted)}</tr>
+        ${e.dropOn ? `<tr class="muted"><td>移行しない拡張子で減る(試算)</td>${ff(e.dropped)}</tr>` : ''}
         <tr class="muted"><td>空になって残らない旧フォルダ</td><td></td><td class="num">${fmtNum(e.emptied)}</td><td class="num">${fmtNum(e.emptied)}</td><td></td></tr></table>
       <p class="hint">見込み = 仮想フォルダ + 移動する項目 + 未処理 + 保留(容量は移動 + 未処理 + 保留のファイルの合計)。移動した分も含めて、アクションを反映した整理後の数です。<br>
       中身をすべて移動・削除したフォルダは残さない前提です(元から空のフォルダ・アクセスできなかったフォルダは残るものとして数えます)。<br>
       整理画面の左の「項目数」「サイズ」は、各フォルダの<b>残り(未処理)/ 元</b>です(移動・削除・保留を設定した分を除いた残り)。<br>
       複数の部門で上限を共有する場合は、各部門のDBの見込みを合計するか、「データ取り込み → ② 複数のDBを統合」で1つにまとめたDBで確認してください。</p>`;
-    $('#it-save', el).onclick = guard(async () => {
+    const save = async () => {
       const gb = +$('#it-slimit', el).value || 0;
-      this.render(el, await api('/api/itemlimit', { limit: +$('#it-limit', el).value, sizeLimit: Math.round(gb * 1024 ** 3) }));
-      toast('上限を変更しました');
+      this.render(el, await api('/api/itemlimit', { limit: +$('#it-limit', el).value, sizeLimit: Math.round(gb * 1024 ** 3), drop: $('#it-drop', el).value, dropOn: $('#it-dropon', el).checked }));
+    };
+    $('#it-save', el).onclick = guard(async () => { await save(); toast('変更しました'); });
+    $('#it-dropon', el).onchange = guard(save);
+    $('#it-drop', el).onkeydown = e2 => { if (e2.key === 'Enter') guard(save)(); };
+    $('#it-droppick', el).onclick = guard(async () => {
+      const sc = await api('/api/migscope');
+      if (!sc.exts.length) return toast('「アクション一覧 → 作業指示CSV出力…」で初動移行の範囲(拡張子)を入力してください', true);
+      $('#it-drop', el).value = sc.exts.join(', ');
+      $('#it-dropon', el).checked = true;
+      await save();
     });
   },
 };
@@ -1998,6 +2014,14 @@ Views.list = {
       $('#ls-clear').onclick = () => { this.setForm({}); this.search(); };
       $('#ls-csv').onclick = () => download('/api/export/list.csv', this.params());
       $('#ls-bulk').onclick = () => this.bulk();
+      // 移行しない拡張子(初動移行の範囲で「除外」にした拡張子)を入れる
+      $('#ls-extpick').onclick = guard(async () => {
+        const sc = await api('/api/migscope');
+        if (!sc.exts.length) return toast('「アクション一覧 → 作業指示CSV出力…」で初動移行の範囲(拡張子)を入力してください', true);
+        $('#ls-ext').value = sc.exts.join(', ');
+        if (sc.mode !== 'exclude') toast('初動移行の範囲は「移行した拡張子」として保存されています。条件(含む/除く)を確認してください');
+        this.search();
+      });
     }
     $('#ls-check').innerHTML = '<option value="">警告・ヒント: 指定なし</option>' + S.checks.map(c => `<option value="${c.key}">[${esc(c.group)}] ${esc(c.label)}</option>`).join('');
     $('#ls-state').innerHTML = STATES.map(([k, l]) => `<option value="${k}">${l}</option>`).join('');
@@ -2008,7 +2032,7 @@ Views.list = {
   ownerOptions() { const cur = $('#ls-owner').value; $('#ls-owner').innerHTML = ownerOptionsHTML(cur, '担当: 指定なし'); $('#ls-owner').value = cur; },
   tagOptions() { const cur = $('#ls-tag').value; $('#ls-tag').innerHTML = '<option value="">タグ: 指定なし</option>' + S.tags.map(t => `<option>${esc(t)}</option>`).join(''); $('#ls-tag').value = cur; },
   setForm(a) {
-    $('#ls-q').value = a.q || ''; $('#ls-kind').value = a.kind || ''; $('#ls-ext').value = a.ext || '';
+    $('#ls-q').value = a.q || ''; $('#ls-kind').value = a.kind || ''; $('#ls-ext').value = a.ext || ''; $('#ls-extnot').value = a.extNot ? '1' : '';
     $('#ls-check').value = a.check || ''; $('#ls-state').value = a.state || '';
     this.tagOptions(); $('#ls-tag').value = a.tag || '';
     this.ownerOptions(); $('#ls-owner').value = a.owner || '';
@@ -2026,7 +2050,7 @@ Views.list = {
     }
   },
   params() {
-    const p = { q: $('#ls-q').value, kind: $('#ls-kind').value, ext: $('#ls-ext').value, check: $('#ls-check').value, state: $('#ls-state').value, tag: $('#ls-tag').value, owner: $('#ls-owner').value };
+    const p = { q: $('#ls-q').value, kind: $('#ls-kind').value, ext: $('#ls-ext').value, extNot: $('#ls-ext').value.trim() ? $('#ls-extnot').value : '', check: $('#ls-check').value, state: $('#ls-state').value, tag: $('#ls-tag').value, owner: $('#ls-owner').value };
     const mb = +$('#ls-min').value; if (mb > 0) p.minSize = Math.round(mb * 1048576);
     const d = $('#ls-before').value; if (d) p.before = Math.floor(new Date(d + 'T00:00:00').getTime() / 1000);
     if (this.scope) p[this.scope.k] = this.scope.v;
@@ -2039,7 +2063,10 @@ Views.list = {
     const p = self.params();
     $('#ls-count').textContent = '検索中…';
     const src = new PagedSource((off, lim) => '/api/search?' + new URLSearchParams({ ...p, offset: off, limit: lim }),
-      n => $('#ls-count').textContent = `${fmtNum(n)} 件`);
+      (n, r) => {
+        const st = r.stats;
+        $('#ls-count').textContent = st ? `${fmtNum(n)} 件(ファイル ${fmtNum(st.files)} / フォルダ ${fmtNum(st.folders)})・${fmtSize(st.size)}` : `${fmtNum(n)} 件`;
+      });
     await src.init();
     self.grid.setSource(src, keep === true);
     self.ran = true;

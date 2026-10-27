@@ -161,7 +161,9 @@ window.TOKEN = "__TOKEN__";
   <div class="toolbar">
     <input type="text" id="ls-q" placeholder="名前(\ を含めるとパス)で検索" style="width:200px">
     <select id="ls-kind"><option value="">すべて</option><option value="file">ファイル</option><option value="dir">フォルダ</option></select>
-    <input type="text" id="ls-ext" placeholder="拡張子" style="width:64px">
+    <select id="ls-extnot" title="拡張子の条件"><option value="">拡張子が次のどれか</option><option value="1">拡張子が次のどれでもない(除く)</option></select>
+    <input type="text" id="ls-ext" placeholder="拡張子(複数可: jpg, png …)" style="width:170px" title="「,」・空白区切りで複数指定できます。拡張子なしは「(なし)」">
+    <button id="ls-extpick" title="移行しない拡張子(作業指示CSVの「初動移行の範囲」で除外にした拡張子)を入れる">除外リスト</button>
     <select id="ls-check"></select>
     <select id="ls-state"></select>
     <select id="ls-tag"></select>

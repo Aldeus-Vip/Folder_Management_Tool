@@ -3,6 +3,7 @@ package fsdb
 import (
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // ---- 整理後の項目数(ファイル + フォルダ)の見込み ----
@@ -42,6 +43,9 @@ type ItemEstimate struct {
 	Kept     FileFolder `json:"kept"`     // 未処理のまま残る項目
 	Held     FileFolder `json:"held"`     // 保留のまま残る項目
 	Deleted  FileFolder `json:"deleted"`  // 削除で減る項目
+	Dropped  FileFolder `json:"dropped"`  // 移行しない拡張子のファイル(試算。DropOn のときだけ)
+	DropExts []string   `json:"dropExts"` // 移行しない拡張子
+	DropOn   bool       `json:"dropOn"`   // 移行しない拡張子を見込みから除く
 	Emptied  int64      `json:"emptied"`  // 中身がすべて移動・削除されて空になる旧フォルダ(残さない)
 	Total    int64      `json:"total"`    // 整理後の見込み(仮想フォルダ + 移動 + 未処理 + 保留)
 	Over     int64      `json:"over"`     // 上限を超える数(0 以下なら上限内)
@@ -55,6 +59,26 @@ func (s *Store) SizeLimit() int64 {
 	s.DB.QueryRow(`SELECT value FROM meta WHERE key='size_limit'`).Scan(&v)
 	n, _ := strconv.ParseInt(v, 10, 64)
 	return n
+}
+
+// DropSetting は「移行しない拡張子」の試算の設定(拡張子と、見込みから除くかどうか)。
+func (s *Store) DropSetting() ([]string, bool) {
+	m, _ := s.Meta()
+	exts, _ := parseExts(m["item_drop"])
+	return exts, m["item_drop_on"] == "1"
+}
+
+func (s *Store) SetDropSetting(exts string, on bool) error {
+	list, _ := parseExts(exts)
+	v := ""
+	if on {
+		v = "1"
+	}
+	err := s.SetMeta(map[string]string{"item_drop": strings.Join(list, ","), "item_drop_on": v})
+	s.mu.Lock()
+	s.items = nil
+	s.mu.Unlock()
+	return err
 }
 
 // SetSizeLimit は容量の上限(バイト。0 = 指定なし)を保存する。
@@ -96,19 +120,30 @@ func (s *Store) EstimateItems() (*ItemEstimate, error) {
 	}
 	s.mu.Unlock()
 	limit, slimit := s.ItemLimit(), s.SizeLimit()
-	if cached != nil && cached.gen == gen {
+	dropExts, dropOn := s.DropSetting()
+	dropKey := fmt.Sprint(dropOn, dropExts)
+	if cached != nil && cached.gen == gen && cached.drop == dropKey {
 		e := cached.est
 		e.Limit, e.Over, e.SizeLimit = limit, e.Total-limit, slimit
 		return &e, nil
+	}
+	drop := map[string]bool{}
+	if dropOn {
+		for _, x := range dropExts {
+			drop[x] = true
+		}
 	}
 	var maxID int64
 	if err := s.DB.QueryRow(`SELECT max(id) FROM nodes`).Scan(&maxID); err != nil {
 		return nil, err
 	}
-	e := ItemEstimate{VFolders: vf}
+	e := ItemEstimate{VFolders: vf, DropExts: dropExts, DropOn: dropOn}
+	if e.DropExts == nil {
+		e.DropExts = []string{}
+	}
 	keep := make([]bool, maxID+1) // 配下に今の場所に残る項目がある
 	// 子 → 親の順(ID の降順)に見て、残る項目があるフォルダを親へ伝える
-	rows, err := s.DB.Query(`SELECT id, COALESCE(parent_id,0), is_dir, flags, size FROM nodes ORDER BY id DESC`)
+	rows, err := s.DB.Query(`SELECT id, COALESCE(parent_id,0), is_dir, flags, size, ext FROM nodes ORDER BY id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -117,13 +152,24 @@ func (s *Store) EstimateItems() (*ItemEstimate, error) {
 		var id, parent, size int64
 		var dir bool
 		var flags int
-		if err := rows.Scan(&id, &parent, &dir, &flags, &size); err != nil {
+		var ext string
+		if err := rows.Scan(&id, &parent, &dir, &flags, &size, &ext); err != nil {
 			return nil, err
 		}
 		e.Current.add(dir, size)
 		act := ""
 		if k := pi.nearest(id); k >= 0 {
 			act = pi.acts[k]
+		}
+		if !dir && act != ActDelete && len(drop) > 0 {
+			x := strings.ToLower(ext)
+			if x == "" {
+				x = "(なし)"
+			}
+			if drop[x] { // 移行しない拡張子 → 整理後には入らない(試算)
+				e.Dropped.add(false, size)
+				continue
+			}
 		}
 		switch act {
 		case ActDelete:
@@ -154,7 +200,7 @@ func (s *Store) EstimateItems() (*ItemEstimate, error) {
 	e.TotalSize = e.Moved.Size + e.Kept.Size + e.Held.Size
 	s.mu.Lock()
 	if s.gen == gen {
-		s.items = &itemCache{gen: gen, est: e}
+		s.items = &itemCache{gen: gen, drop: dropKey, est: e}
 	}
 	s.mu.Unlock()
 	e.Limit, e.Over, e.SizeLimit = limit, e.Total-limit, slimit
@@ -162,6 +208,7 @@ func (s *Store) EstimateItems() (*ItemEstimate, error) {
 }
 
 type itemCache struct {
-	gen int64
-	est ItemEstimate
+	gen  int64
+	drop string
+	est  ItemEstimate
 }

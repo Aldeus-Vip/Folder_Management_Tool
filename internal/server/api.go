@@ -102,11 +102,11 @@ func (a *App) apiSearch(r *http.Request, s *fsdb.Store) (any, error) {
 	if limit > 5000 {
 		limit = 5000
 	}
-	ns, total, err := s.Search(fsdb.FilterFromQuery(r.URL.Query()), int(qInt(r, "offset", 0)), int(limit))
+	ns, st, err := s.SearchWithStats(fsdb.FilterFromQuery(r.URL.Query()), int(qInt(r, "offset", 0)), int(limit))
 	if err != nil {
 		return nil, badRequest("%v", err)
 	}
-	return map[string]any{"rows": ns, "total": total}, nil
+	return map[string]any{"rows": ns, "total": st.Total, "stats": st}, nil
 }
 
 func (a *App) apiExts(r *http.Request, s *fsdb.Store) (any, error) {

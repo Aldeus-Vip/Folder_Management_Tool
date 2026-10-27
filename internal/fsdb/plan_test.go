@@ -982,3 +982,31 @@ func TestItemCounts(t *testing.T) {
 }
 
 func ffEq(f FileFolder, files, folders int64) bool { return f.Files == files && f.Folders == folders }
+
+// 拡張子の複数指定(含む / 除く)と、移行しない拡張子の試算
+func TestExtFilterAndDrop(t *testing.T) {
+	s, ids := testDB(t)
+	_, st, err := s.SearchWithStats(Filter{Ext: "PDF, .xlsx"}, 0, 10)
+	if err != nil || st.Files != 3 || st.Size != 3*1024 {
+		t.Fatalf("in: %+v %v", st, err)
+	}
+	// 除く: pdf・xlsx 以外(フォルダ6 + ファイル4)
+	_, st, _ = s.SearchWithStats(Filter{Ext: "pdf,xlsx", ExtNot: true}, 0, 10)
+	if st.Files != 4 || st.Folders != 6 || st.Size != 4*1024 {
+		t.Fatalf("not: %+v", st)
+	}
+	_, st, _ = s.SearchWithStats(Filter{Ext: "txt", ExtNot: true, Under: ids["総務"]}, 0, 10)
+	if st.Files != 1 || st.Folders != 1 { // 規程.docx と 古い
+		t.Fatalf("under: %+v", st)
+	}
+	// 試算: txt を移行しない → メモ.txt・a.txt・readme.txt が減り、古い(中身が a.txt だけ)は空になる
+	s.SetDropSetting("txt", true)
+	e, _ := s.EstimateItems()
+	if e.Dropped.Files != 3 || e.Dropped.Size != 3*1024 || e.Emptied != 1 || e.Total != 13-3-1 || e.TotalSize != 4*1024 {
+		t.Fatalf("drop: %+v", e)
+	}
+	s.SetDropSetting("txt", false)
+	if e, _ := s.EstimateItems(); e.Total != 13 || e.Dropped.Files != 0 {
+		t.Fatalf("drop off: %+v", e)
+	}
+}

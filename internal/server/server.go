@@ -146,8 +146,10 @@ func (a *App) Handler() http.Handler {
 		"GET /api/items": a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) { return s.EstimateItems() }),
 		"POST /api/itemlimit": a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) {
 			var q struct {
-				Limit     int64  `json:"limit"`
-				SizeLimit *int64 `json:"sizeLimit"` // バイト。0 = 指定なし
+				Limit     int64   `json:"limit"`
+				SizeLimit *int64  `json:"sizeLimit"` // バイト。0 = 指定なし
+				Drop      *string `json:"drop"`      // 移行しない拡張子(試算)
+				DropOn    bool    `json:"dropOn"`
 			}
 			if err := decode(r, &q); err != nil {
 				return nil, err
@@ -158,6 +160,11 @@ func (a *App) Handler() http.Handler {
 			if q.SizeLimit != nil {
 				if err := s.SetSizeLimit(*q.SizeLimit); err != nil {
 					return nil, badRequest("%v", err)
+				}
+			}
+			if q.Drop != nil {
+				if err := s.SetDropSetting(*q.Drop, q.DropOn); err != nil {
+					return nil, err
 				}
 			}
 			return s.EstimateItems()
