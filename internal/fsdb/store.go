@@ -446,25 +446,39 @@ func (s *Store) where(f Filter) (string, []any, error) {
 		}
 		add(c, a...)
 	}
-	switch f.State {
-	case "":
-	case "unhandled":
-		add("NOT (" + coveredExpr + ")")
-	case "handled":
-		add(coveredExpr)
-	case "own":
-		add("(p.action IS NOT NULL AND (p.action!='' OR p.memo!='' OR p.due!=''))")
-	case ActDelete, ActMove, ActHold:
-		add("p.action=?", f.State)
-	case "ihold": // 保留(親フォルダの設定を含む)
-		tf, err := s.TreeFilterFor("", "hold")
-		if err != nil {
-			return "", nil, err
+	// 処理状況(「,」区切りで複数指定 → どれかに当てはまるもの)
+	if f.State != "" {
+		var ors []string
+		var oargs []any
+		for _, st := range strings.Split(f.State, ",") {
+			st = strings.TrimSpace(st)
+			switch st {
+			case "":
+				continue
+			case "unhandled":
+				ors = append(ors, "NOT ("+coveredExpr+")")
+			case "handled":
+				ors = append(ors, coveredExpr)
+			case "own":
+				ors = append(ors, "(p.action IS NOT NULL AND (p.action!='' OR p.memo!='' OR p.due!=''))")
+			case ActDelete, ActMove, ActHold:
+				ors = append(ors, "p.action=?")
+				oargs = append(oargs, st)
+			case "ihold", "idelete", "imove": // 親フォルダの設定を含む
+				tf, err := s.TreeFilterFor("", st[1:])
+				if err != nil {
+					return "", nil, err
+				}
+				c, a := segsCond(tf.segs)
+				ors = append(ors, c)
+				oargs = append(oargs, a...)
+			default:
+				return "", nil, fmt.Errorf("不明な処理状況: %s", st)
+			}
 		}
-		c, a := segsCond(tf.segs)
-		add(c, a...)
-	default:
-		return "", nil, fmt.Errorf("不明な処理状況: %s", f.State)
+		if len(ors) > 0 {
+			add("("+strings.Join(ors, " OR ")+")", oargs...)
+		}
 	}
 	if f.Editor != "" {
 		add("p.editor=?", f.Editor)

@@ -1995,7 +1995,26 @@ function listMenu(rows, e, r) {
 }
 
 // ===== 検索・リスト =====
-const STATES = [['', '処理状況: すべて'], ['unhandled', '未処理'], ['handled', '処理済み(親フォルダの設定を含む)'], ['own', '個別に設定あり'], ['delete', '削除(個別)'], ['move', '移動(個別)'], ['hold', '保留(個別)'], ['ihold', '保留(親フォルダの設定を含む)']];
+const STATES = [['unhandled', '未処理'], ['ihold', '保留(親フォルダの設定を含む)'], ['hold', '保留(個別)'],
+  ['imove', '移動(親フォルダの設定を含む)'], ['move', '移動(個別)'], ['idelete', '削除(親フォルダの設定を含む)'], ['delete', '削除(個別)'],
+  ['handled', '処理済み(親フォルダの設定を含む)'], ['own', '個別に設定あり']];
+
+// 複数選択のドロップダウン(チェックしたもののどれかに当てはまる項目を表示)
+function multiSelect(el, options, title, onChange) {
+  let sel = [];
+  const label = () => sel.length ? `${title}: ${sel.map(k => options.find(o => o[0] === k)?.[1].replace('親フォルダの設定を含む', '親含む').replace('親フォルダの設定を含む', '親含む')).join('・')}` : `${title}: すべて`;
+  el.innerHTML = `<button type="button" class="msel-btn"></button><div class="msel-pop" hidden>
+    ${options.map(([k, l]) => `<label><input type="checkbox" value="${k}"> ${esc(l)}</label>`).join('')}
+    <div class="msel-foot"><a data-clear>すべて(選択を解除)</a></div></div>`;
+  const btn = $('.msel-btn', el), pop = $('.msel-pop', el);
+  const sync = () => { btn.textContent = label() + ' ▾'; btn.classList.toggle('on', sel.length > 0); $$('input', pop).forEach(c => c.checked = sel.includes(c.value)); };
+  btn.onclick = e => { e.stopPropagation(); pop.hidden = !pop.hidden; };
+  document.addEventListener('mousedown', e => { if (!el.contains(e.target)) pop.hidden = true; });
+  $$('input', pop).forEach(c => c.onchange = () => { sel = options.map(o => o[0]).filter(k => k === c.value ? c.checked : sel.includes(k)); sync(); onChange(); });
+  $('[data-clear]', pop).onclick = () => { sel = []; sync(); onChange(); };
+  sync();
+  return { get: () => sel.join(','), set: v => { sel = (v || '').split(',').filter(k => options.some(o => o[0] === k)); sync(); } };
+}
 Views.list = {
   reset() {
     if (!this.grid) {
@@ -2024,7 +2043,7 @@ Views.list = {
       });
     }
     $('#ls-check').innerHTML = '<option value="">警告・ヒント: 指定なし</option>' + S.checks.map(c => `<option value="${c.key}">[${esc(c.group)}] ${esc(c.label)}</option>`).join('');
-    $('#ls-state').innerHTML = STATES.map(([k, l]) => `<option value="${k}">${l}</option>`).join('');
+    if (!this.stateSel) this.stateSel = multiSelect($('#ls-state'), STATES, '処理状況', () => this.search());
     this.scope = null;
     this.setForm({});
     this.ran = false;
@@ -2033,7 +2052,7 @@ Views.list = {
   tagOptions() { const cur = $('#ls-tag').value; $('#ls-tag').innerHTML = '<option value="">タグ: 指定なし</option>' + S.tags.map(t => `<option>${esc(t)}</option>`).join(''); $('#ls-tag').value = cur; },
   setForm(a) {
     $('#ls-q').value = a.q || ''; $('#ls-kind').value = a.kind || ''; $('#ls-ext').value = a.ext || ''; $('#ls-extnot').value = a.extNot ? '1' : '';
-    $('#ls-check').value = a.check || ''; $('#ls-state').value = a.state || '';
+    $('#ls-check').value = a.check || ''; this.stateSel.set(a.state || '');
     this.tagOptions(); $('#ls-tag').value = a.tag || '';
     this.ownerOptions(); $('#ls-owner').value = a.owner || '';
     $('#ls-min').value = ''; $('#ls-before').value = '';
@@ -2050,7 +2069,7 @@ Views.list = {
     }
   },
   params() {
-    const p = { q: $('#ls-q').value, kind: $('#ls-kind').value, ext: $('#ls-ext').value, extNot: $('#ls-ext').value.trim() ? $('#ls-extnot').value : '', check: $('#ls-check').value, state: $('#ls-state').value, tag: $('#ls-tag').value, owner: $('#ls-owner').value };
+    const p = { q: $('#ls-q').value, kind: $('#ls-kind').value, ext: $('#ls-ext').value, extNot: $('#ls-ext').value.trim() ? $('#ls-extnot').value : '', check: $('#ls-check').value, state: this.stateSel.get(), tag: $('#ls-tag').value, owner: $('#ls-owner').value };
     const mb = +$('#ls-min').value; if (mb > 0) p.minSize = Math.round(mb * 1048576);
     const d = $('#ls-before').value; if (d) p.before = Math.floor(new Date(d + 'T00:00:00').getTime() / 1000);
     if (this.scope) p[this.scope.k] = this.scope.v;

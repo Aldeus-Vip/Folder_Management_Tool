@@ -1010,3 +1010,28 @@ func TestExtFilterAndDrop(t *testing.T) {
 		t.Fatalf("drop off: %+v", e)
 	}
 }
+
+// 処理状況の複数指定
+func TestMultiState(t *testing.T) {
+	s, ids := testDB(t)
+	v, _, _ := s.VCreate(VRoot, "010", "x")
+	s.PlanMove([]int64{ids["経理"]}, v, "x")     // 7項目
+	s.PlanDelete([]int64{ids[`総務\古い`]}, "x") // 2項目
+	s.PlanHold([]int64{ids["readme.txt"]}, "x")
+	count := func(st string) int64 {
+		_, n, err := s.Search(Filter{State: st}, 0, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if count("unhandled") != 3 || count("ihold") != 1 || count("unhandled,ihold") != 4 {
+		t.Fatalf("unhandled=%d ihold=%d both=%d", count("unhandled"), count("ihold"), count("unhandled,ihold"))
+	}
+	if count("imove") != 7 || count("move") != 1 || count("idelete,imove") != 9 || count("delete,move,hold") != 3 {
+		t.Fatalf("imove=%d move=%d", count("imove"), count("move"))
+	}
+	if _, _, err := s.Search(Filter{State: "unhandled,bad"}, 0, 1); err == nil {
+		t.Fatal("bad state")
+	}
+}
