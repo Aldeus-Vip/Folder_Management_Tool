@@ -73,6 +73,9 @@ window.TOKEN = "__TOKEN__";
       <span></span><span class="hint" style="grid-column:span 2">SharePoint を OneDrive で同期(ショートカット)したフォルダをスキャンする場合に、SharePoint の URL を入れます。
         DBには個人のパス(C:\Users\…)ではなくこのURLで記録され、全員が同じパスで作業・統合できます。実際の場所はPCごとに「⚙ オプション」で設定します。</span>
       <span>保存するDB名</span><input type="text" id="scan-db" placeholder="空欄なら フォルダ名_日時"><span></span>
+      <span>アクセス権限</span><select id="scan-acl"><option value="">取得しない</option><option value="dirs" selected>フォルダだけ取得する(推奨)</option><option value="all">フォルダとファイルを取得する(時間がかかります)</option></select><span></span>
+      <span></span><span class="hint" style="grid-column:span 2">SharePoint の「固有の権限」の数(ライブラリあたり上限 50,000)を確認するため、NTFS のアクセス権限を読み取ります。
+        ファイルに個別の権限を付けていることが多い場合だけ「フォルダとファイル」を選んでください。</span>
       <span>同時読み込み数</span><select id="scan-workers"><option>4</option><option>8</option><option selected>16</option><option>32</option><option>64</option></select><span></span>
       <span></span><button class="primary" id="scan-go">スキャン開始</button><span></span>
     </div>

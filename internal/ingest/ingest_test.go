@@ -57,7 +57,7 @@ func TestScan(t *testing.T) {
 	mk("z/c.txt", "hello")
 	os.MkdirAll(filepath.Join(root, "empty"), 0o755)
 	db := filepath.Join(t.TempDir(), "s.db")
-	res, err := Scan(context.Background(), root, db, 4, "", func(string, int64, int64) {})
+	res, err := Scan(context.Background(), root, db, 4, "", "", func(string, int64, int64) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestScanAlias(t *testing.T) {
 	os.MkdirAll(filepath.Join(root, "経理"), 0o755)
 	os.WriteFile(filepath.Join(root, "経理", "a.txt"), []byte("x"), 0o644)
 	db := filepath.Join(t.TempDir(), "s.db")
-	if _, err := Scan(context.Background(), root, db, 2, "https://example.sharepoint.com/sites/T/Shared Documents", nil); err != nil {
+	if _, err := Scan(context.Background(), root, db, 2, "https://example.sharepoint.com/sites/T/Shared Documents", "", nil); err != nil {
 		t.Fatal(err)
 	}
 	s, _ := fsdb.Open(db)

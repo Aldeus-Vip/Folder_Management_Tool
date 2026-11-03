@@ -150,6 +150,7 @@ func (a *App) Handler() http.Handler {
 				SizeLimit *int64  `json:"sizeLimit"` // バイト。0 = 指定なし
 				Drop      *string `json:"drop"`      // 移行しない拡張子(試算)
 				DropOn    bool    `json:"dropOn"`
+				PermLimit int64   `json:"permLimit"` // 固有の権限の上限(0 = 変えない)
 			}
 			if err := decode(r, &q); err != nil {
 				return nil, err
@@ -162,12 +163,24 @@ func (a *App) Handler() http.Handler {
 					return nil, badRequest("%v", err)
 				}
 			}
+			if q.PermLimit > 0 {
+				if err := s.SetPermLimit(q.PermLimit); err != nil {
+					return nil, badRequest("%v", err)
+				}
+			}
 			if q.Drop != nil {
 				if err := s.SetDropSetting(*q.Drop, q.DropOn); err != nil {
 					return nil, err
 				}
 			}
 			return s.EstimateItems()
+		}),
+		"GET /api/acl": a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) {
+			id, err := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+			if err != nil {
+				return nil, badRequest("id を指定してください")
+			}
+			return s.NodeACL(id)
 		}),
 		"GET /api/owners":    a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) { return s.Owners() }),
 		"GET /api/vwarnings": a.withStore(a.apiVWarnings),
@@ -343,7 +356,7 @@ func (a *App) apiState(r *http.Request) (any, error) {
 	if s != nil {
 		meta, _ := s.Meta()
 		out["db"] = map[string]any{"path": s.Path, "meta": meta, "settings": s.Settings(), "rules": s.Rules(), "code": s.EditorCode(),
-			"localRoot": a.readPathMap()[meta["alias_root"]]}
+			"acl": s.ACLScanned(), "localRoot": a.readPathMap()[meta["alias_root"]]}
 	}
 	if job != nil {
 		out["job"] = job.snapshot()
@@ -536,6 +549,7 @@ func (a *App) apiScan(r *http.Request) (any, error) {
 		DB      string
 		Workers int
 		Alias   string // 記録用のパス(SharePoint の URL など。任意)
+		ACL     string // アクセス権限の取得: "" / "dirs" / "all"
 	}
 	if err := decode(r, &req); err != nil {
 		return nil, err
@@ -553,7 +567,7 @@ func (a *App) apiScan(r *http.Request) (any, error) {
 		return nil, err
 	}
 	return a.startJob("scan", db, func(ctx context.Context, prog fsdb.Progress) (*ingest.Result, error) {
-		return ingest.Scan(ctx, root, db, req.Workers, req.Alias, prog)
+		return ingest.Scan(ctx, root, db, req.Workers, req.Alias, req.ACL, prog)
 	})
 }
 

@@ -1015,7 +1015,7 @@ func TestExtFilterAndDrop(t *testing.T) {
 func TestMultiState(t *testing.T) {
 	s, ids := testDB(t)
 	v, _, _ := s.VCreate(VRoot, "010", "x")
-	s.PlanMove([]int64{ids["経理"]}, v, "x")     // 7項目
+	s.PlanMove([]int64{ids["経理"]}, v, "x")   // 7項目
 	s.PlanDelete([]int64{ids[`総務\古い`]}, "x") // 2項目
 	s.PlanHold([]int64{ids["readme.txt"]}, "x")
 	count := func(st string) int64 {

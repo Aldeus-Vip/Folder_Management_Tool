@@ -167,21 +167,39 @@ type Node struct {
 	InnerS int64 `json:"innerS"`
 	// 同じ範囲の項目数(ファイル + フォルダ。自身を含む)
 	InnerItems int64 `json:"innerItems"`
+
+	// アクセス権限(スキャン時に取得した場合)。Perm: 1=取得済み 2=継承を無効化 4=直接の付与あり 8=不明なアカウントあり
+	Perm     int   `json:"perm,omitempty"`
+	PermACEs int   `json:"permN,omitempty"`   // 付与の件数(引き継いだ分を含む)
+	PermSub  int64 `json:"permSub,omitempty"` // 固有の権限を持つ項目数(自身と配下。ルートを除く)
 }
+
+const (
+	PermScanned   = 1
+	PermProtected = 2
+	PermExplicit  = 4
+	PermOrphan    = 8
+)
+
+// Unique は SharePoint で固有の権限になるか。
+func (x *Node) Unique() bool { return x.Perm&(PermProtected|PermExplicit) != 0 }
 
 const nodeCols = `n.id, COALESCE(n.parent_id,0), n.end_id, n.depth, n.is_dir, n.name, n.ext, n.size, n.mtime,
  n.child_count, n.file_count, n.dir_count, n.path_len, n.flags, n.path,
  COALESCE(p.action,''), COALESCE(p.vparent,''), COALESCE(p.new_name,''), COALESCE(p.due,''), COALESCE(p.memo,''), COALESCE(p.editor,''),
  COALESCE((SELECT group_concat(g.tag, char(31)) FROM tags g WHERE g.node_id = n.id),''),
  COALESCE((SELECT message FROM node_errors e WHERE e.node_id = n.id),''), COALESCE(p.owner,''),
- COALESCE((SELECT msg FROM rule_hits h WHERE h.node_id = n.id),'')`
+ COALESCE((SELECT msg FROM rule_hits h WHERE h.node_id = n.id),''),
+ COALESCE((SELECT 1 | (a.protected<<1) | ((a.explicit>0)<<2) | (d.orphan<<3) | (d.total<<4) FROM acls a JOIN acl_defs d ON d.id=a.def WHERE a.node_id = n.id),0)`
 const nodeFrom = ` FROM nodes n LEFT JOIN plan p ON p.node_id = n.id `
 
 func scanNode(rows *sql.Rows, x *Node) error {
 	var tags string
+	var perm int
 	err := rows.Scan(&x.ID, &x.Parent, &x.End, &x.Depth, &x.IsDir, &x.Name, &x.Ext, &x.Size, &x.Mtime,
 		&x.Children, &x.Files, &x.Dirs, &x.PathLen, &x.Flags, &x.Path,
-		&x.Action, &x.VParent, &x.NewName, &x.Due, &x.Memo, &x.Editor, &tags, &x.Err, &x.Owner, &x.RuleMsg)
+		&x.Action, &x.VParent, &x.NewName, &x.Due, &x.Memo, &x.Editor, &tags, &x.Err, &x.Owner, &x.RuleMsg, &perm)
+	x.Perm, x.PermACEs = perm&0xF, perm>>4
 	x.Tags = []string{}
 	if tags != "" {
 		x.Tags = strings.Split(tags, "\x1f")
@@ -340,6 +358,8 @@ var CheckDefs = []struct {
 	{"longpath", "パスが長い", "移行(SharePoint)"},
 	{"access", "アクセス不可", "移行(SharePoint)"},
 	{"rule5s", "5Sルールに合わない(現在の構成に当てはめた場合)", "5Sルール"},
+	{"aclunique", "固有の権限あり(継承の無効化・直接の付与)", "アクセス権限"},
+	{"aclorphan", "不明なアカウントへの付与", "アクセス権限"},
 }
 
 func checkCond(key string, st Settings) (string, []any) {
@@ -360,6 +380,10 @@ func checkCond(key string, st Settings) (string, []any) {
 		return "n.path_len>?", []any{st.PathLimit}
 	case "rule5s":
 		return "n.id IN (SELECT node_id FROM rule_hits)", nil
+	case "aclunique":
+		return "n.id>1 AND n.id IN (SELECT node_id FROM acls WHERE protected=1 OR explicit>0)", nil
+	case "aclorphan":
+		return "n.id IN (SELECT a.node_id FROM acls a JOIN acl_defs d ON d.id=a.def WHERE d.orphan=1)", nil
 	case "migration":
 		return "(n.flags & ? != 0 OR n.path_len>?)", []any{FlagBadChar | FlagTrailing | FlagReserved | FlagAccess, st.PathLimit}
 	}

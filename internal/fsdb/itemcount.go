@@ -52,6 +52,17 @@ type ItemEstimate struct {
 	// 容量(ファイルの合計サイズ)
 	TotalSize int64 `json:"totalSize"` // 整理後の見込み(移動 + 未処理 + 保留)
 	SizeLimit int64 `json:"sizeLimit"` // 容量の上限(バイト。0 = 指定なし)
+	// 固有の権限を持つ項目(継承の無効化・直接の付与。アクセス権限を取得した場合だけ)
+	Perm PermEstimate `json:"perm"`
+}
+
+// PermEstimate は固有の権限を持つ項目数(SharePoint のライブラリあたりの上限と比べる)。
+type PermEstimate struct {
+	Scanned bool  `json:"scanned"` // アクセス権限を取得したDBか
+	Current int64 `json:"current"` // 現在
+	Total   int64 `json:"total"`   // 整理後の見込み(削除・移行しない分・空になるフォルダを除く)
+	Limit   int64 `json:"limit"`
+	Over    int64 `json:"over"`
 }
 
 func (s *Store) SizeLimit() int64 {
@@ -111,7 +122,7 @@ func (s *Store) EstimateItems() (*ItemEstimate, error) {
 		return nil, err
 	}
 	s.mu.Lock()
-	pi, gen, cached := s.pidx, s.gen, s.items
+	pi, gen, cached, pre := s.pidx, s.gen, s.items, s.pre
 	vf := int64(0)
 	for _, n := range s.vt.nodes {
 		if n.UUID != VRoot && n.Link == "" {
@@ -119,12 +130,13 @@ func (s *Store) EstimateItems() (*ItemEstimate, error) {
 		}
 	}
 	s.mu.Unlock()
-	limit, slimit := s.ItemLimit(), s.SizeLimit()
+	limit, slimit, plimit := s.ItemLimit(), s.SizeLimit(), s.PermLimit()
 	dropExts, dropOn := s.DropSetting()
 	dropKey := fmt.Sprint(dropOn, dropExts)
 	if cached != nil && cached.gen == gen && cached.drop == dropKey {
 		e := cached.est
 		e.Limit, e.Over, e.SizeLimit = limit, e.Total-limit, slimit
+		e.Perm.Limit, e.Perm.Over = plimit, e.Perm.Total-plimit
 		return &e, nil
 	}
 	drop := map[string]bool{}
@@ -138,6 +150,8 @@ func (s *Store) EstimateItems() (*ItemEstimate, error) {
 		return nil, err
 	}
 	e := ItemEstimate{VFolders: vf, DropExts: dropExts, DropOn: dropOn}
+	e.Perm.Scanned = pre.uniq != nil
+	uniq := func(id int64) bool { return id > 1 && pre.unique(id, id) > 0 }
 	if e.DropExts == nil {
 		e.DropExts = []string{}
 	}
@@ -157,6 +171,10 @@ func (s *Store) EstimateItems() (*ItemEstimate, error) {
 			return nil, err
 		}
 		e.Current.add(dir, size)
+		u := uniq(id)
+		if u {
+			e.Perm.Current++
+		}
 		act := ""
 		if k := pi.nearest(id); k >= 0 {
 			act = pi.acts[k]
@@ -177,12 +195,18 @@ func (s *Store) EstimateItems() (*ItemEstimate, error) {
 			continue
 		case ActMove:
 			e.Moved.add(dir, size)
+			if u {
+				e.Perm.Total++
+			}
 			continue
 		}
 		// 元から空のフォルダ・中身が分からないフォルダ(アクセス不可)はそのまま残るものとして数える
 		if dir && !keep[id] && flags&(FlagEmptyDir|FlagAccess) == 0 {
 			e.Emptied++ // 中身がすべて移動・削除されて空になる
 			continue
+		}
+		if u {
+			e.Perm.Total++
 		}
 		if act == ActHold {
 			e.Held.add(dir, size)
@@ -204,6 +228,7 @@ func (s *Store) EstimateItems() (*ItemEstimate, error) {
 	}
 	s.mu.Unlock()
 	e.Limit, e.Over, e.SizeLimit = limit, e.Total-limit, slimit
+	e.Perm.Limit, e.Perm.Over = plimit, e.Perm.Total-plimit
 	return &e, nil
 }
 
