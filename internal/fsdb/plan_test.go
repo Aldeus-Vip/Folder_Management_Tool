@@ -916,7 +916,7 @@ func TestMigrationScope(t *testing.T) {
 func TestEstimateItems(t *testing.T) {
 	s, ids := testDB(t)
 	e, _ := s.EstimateItems()
-	if e.Current != (FileFolder{7, 6}) || e.Total != 13 || e.Limit != DefaultItemLimit || e.Over >= 0 {
+	if !ffEq(e.Current, 7, 6) || e.Total != 13 || e.Limit != DefaultItemLimit || e.Over >= 0 {
 		t.Fatalf("initial: %+v", e)
 	}
 	v, _, _ := s.VCreate(VRoot, "010_経理", "x")
@@ -924,15 +924,25 @@ func TestEstimateItems(t *testing.T) {
 	s.PlanDelete([]int64{ids[`総務\古い`]}, "x")
 	e, _ = s.EstimateItems()
 	// 仮想フォルダ1 + 移動7 + 残る(ルート・総務・規程.docx・readme.txt)4
-	if e.VFolders != 1 || e.Moved != (FileFolder{4, 3}) || e.Deleted != (FileFolder{1, 1}) || e.Kept != (FileFolder{2, 2}) || e.Total != 12 {
+	if e.VFolders != 1 || !ffEq(e.Moved, 4, 3) || !ffEq(e.Deleted, 1, 1) || !ffEq(e.Kept, 2, 2) || e.Total != 12 {
 		t.Fatalf("after: %+v", e)
+	}
+	// 容量(ファイルは1KBずつ)と、未処理として残る項目数(ルート・総務・規程.docx・readme.txt)
+	if e.Current.Size != 7*1024 || e.Moved.Size != 4*1024 || e.Deleted.Size != 1024 || e.TotalSize != 6*1024 {
+		t.Fatalf("size: %+v", e)
+	}
+	if n := node(t, s, 1); n.RemItems != 4 || n.Files+n.Dirs+1 != 13 {
+		t.Fatalf("remItems: %d inner %d", n.RemItems, n.InnerItems)
+	}
+	if n := node(t, s, ids["経理"]); n.RemItems != 0 {
+		t.Fatal("moved folder has no remaining items")
 	}
 	// 規程.docx も移動すると総務は空になって残らない。readme.txt を保留
 	s.PlanMove([]int64{ids[`総務\規程.docx`]}, v, "x")
 	s.PlanHold([]int64{ids["readme.txt"]}, "x")
 	s.SetItemLimit(10)
 	e, _ = s.EstimateItems()
-	if e.Emptied != 1 || e.Held != (FileFolder{1, 0}) || e.Kept != (FileFolder{0, 1}) || e.Total != 11 || e.Over != 1 {
+	if e.Emptied != 1 || !ffEq(e.Held, 1, 0) || !ffEq(e.Kept, 0, 1) || e.Total != 11 || e.Over != 1 {
 		t.Fatalf("emptied: %+v", e)
 	}
 }
@@ -968,5 +978,60 @@ func TestItemCounts(t *testing.T) {
 		if r.Name == "経理" && r.Items != 4 || r.Name == "020_請求" && r.Items != 2 {
 			t.Fatalf("kids: %+v", r)
 		}
+	}
+}
+
+func ffEq(f FileFolder, files, folders int64) bool { return f.Files == files && f.Folders == folders }
+
+// 拡張子の複数指定(含む / 除く)と、移行しない拡張子の試算
+func TestExtFilterAndDrop(t *testing.T) {
+	s, ids := testDB(t)
+	_, st, err := s.SearchWithStats(Filter{Ext: "PDF, .xlsx"}, 0, 10)
+	if err != nil || st.Files != 3 || st.Size != 3*1024 {
+		t.Fatalf("in: %+v %v", st, err)
+	}
+	// 除く: pdf・xlsx 以外(フォルダ6 + ファイル4)
+	_, st, _ = s.SearchWithStats(Filter{Ext: "pdf,xlsx", ExtNot: true}, 0, 10)
+	if st.Files != 4 || st.Folders != 6 || st.Size != 4*1024 {
+		t.Fatalf("not: %+v", st)
+	}
+	_, st, _ = s.SearchWithStats(Filter{Ext: "txt", ExtNot: true, Under: ids["総務"]}, 0, 10)
+	if st.Files != 1 || st.Folders != 1 { // 規程.docx と 古い
+		t.Fatalf("under: %+v", st)
+	}
+	// 試算: txt を移行しない → メモ.txt・a.txt・readme.txt が減り、古い(中身が a.txt だけ)は空になる
+	s.SetDropSetting("txt", true)
+	e, _ := s.EstimateItems()
+	if e.Dropped.Files != 3 || e.Dropped.Size != 3*1024 || e.Emptied != 1 || e.Total != 13-3-1 || e.TotalSize != 4*1024 {
+		t.Fatalf("drop: %+v", e)
+	}
+	s.SetDropSetting("txt", false)
+	if e, _ := s.EstimateItems(); e.Total != 13 || e.Dropped.Files != 0 {
+		t.Fatalf("drop off: %+v", e)
+	}
+}
+
+// 処理状況の複数指定
+func TestMultiState(t *testing.T) {
+	s, ids := testDB(t)
+	v, _, _ := s.VCreate(VRoot, "010", "x")
+	s.PlanMove([]int64{ids["経理"]}, v, "x")   // 7項目
+	s.PlanDelete([]int64{ids[`総務\古い`]}, "x") // 2項目
+	s.PlanHold([]int64{ids["readme.txt"]}, "x")
+	count := func(st string) int64 {
+		_, n, err := s.Search(Filter{State: st}, 0, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if count("unhandled") != 3 || count("ihold") != 1 || count("unhandled,ihold") != 4 {
+		t.Fatalf("unhandled=%d ihold=%d both=%d", count("unhandled"), count("ihold"), count("unhandled,ihold"))
+	}
+	if count("imove") != 7 || count("move") != 1 || count("idelete,imove") != 9 || count("delete,move,hold") != 3 {
+		t.Fatalf("imove=%d move=%d", count("imove"), count("move"))
+	}
+	if _, _, err := s.Search(Filter{State: "unhandled,bad"}, 0, 1); err == nil {
+		t.Fatal("bad state")
 	}
 }

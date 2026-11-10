@@ -115,8 +115,8 @@ func (s *Store) TreeFilterFor(owner, mode string) (*TreeFilter, error) {
 	pi := s.pidx
 	switch mode {
 	case "":
-	case "hold":
-		segs = intersectSegs(segs, pi.segments(func(k int32) bool { return k >= 0 && pi.acts[k] == ActHold }, maxID))
+	case ActHold, ActDelete, ActMove: // 親フォルダの設定を含む
+		segs = intersectSegs(segs, pi.segments(func(k int32) bool { return k >= 0 && pi.acts[k] == mode }, maxID))
 	case "unhandled":
 		segs = intersectSegs(segs, pi.segments(func(k int32) bool { return k < 0 }, maxID))
 	case "rule":

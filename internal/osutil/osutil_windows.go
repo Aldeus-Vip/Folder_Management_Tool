@@ -214,6 +214,9 @@ func showDialog(kind DialogKind, initial string) (string, error) {
 	case PickFolder:
 		opts |= fosPickFolders | fosPathMustExist
 		title = "スキャンするフォルダを選択"
+	case OpenCSV:
+		opts |= fosFileMustExist
+		title, filters = "取り込むCSVを選択", []filterSpec{{u16("CSV (*.csv)"), u16("*.csv")}, {u16("すべてのファイル (*.*)"), u16("*.*")}}
 	case OpenDB:
 		opts |= fosFileMustExist
 		title, filters = "開くDBを選択", dbFilter
@@ -239,7 +242,7 @@ func showDialog(kind DialogKind, initial string) (string, error) {
 		dir := initial
 		if st, err := os.Stat(initial); err != nil || !st.IsDir() {
 			dir = filepath.Dir(initial)
-			if save || kind == OpenDB {
+			if save || kind == OpenDB || kind == OpenCSV {
 				vcall(dlg, vSetFileName, uintptr(unsafe.Pointer(u16(filepath.Base(initial)))))
 			}
 		}

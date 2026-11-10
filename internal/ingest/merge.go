@@ -147,7 +147,15 @@ func Merge(ctx context.Context, dbs []string, dbPath string, preferNewest bool, 
 		}
 		var total int64
 		db.QueryRow(`SELECT count(*) FROM nodes`).Scan(&total)
-		rows, err := db.Query(`SELECT path, is_dir, size, mtime, flags FROM nodes ORDER BY id`)
+		// アクセス権限(取得済みのDBだけ)も引き継ぐ
+		var hasACL int
+		db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name IN ('acls','acl_defs')`).Scan(&hasACL)
+		q := `SELECT path, is_dir, size, mtime, flags, NULL, NULL FROM nodes ORDER BY id`
+		if hasACL == 2 {
+			q = `SELECT n.path, n.is_dir, n.size, n.mtime, n.flags, a.protected, d.text FROM nodes n
+				LEFT JOIN acls a ON a.node_id=n.id LEFT JOIN acl_defs d ON d.id=a.def ORDER BY n.id`
+		}
+		rows, err := db.Query(q)
 		if err != nil {
 			db.Close()
 			return nil, err
@@ -158,7 +166,9 @@ func Merge(ctx context.Context, dbs []string, dbPath string, preferNewest bool, 
 			var isDir bool
 			var size, mtime int64
 			var flags int
-			if err := rows.Scan(&p, &isDir, &size, &mtime, &flags); err != nil {
+			var prot sql.NullBool
+			var aclText sql.NullString
+			if err := rows.Scan(&p, &isDir, &size, &mtime, &flags, &prot, &aclText); err != nil {
 				rows.Close()
 				db.Close()
 				return nil, err
@@ -168,11 +178,18 @@ func Merge(ctx context.Context, dbs []string, dbPath string, preferNewest bool, 
 			}
 			p = trim(p)
 			acc := flags & fsdb.FlagAccess
+			var acl *fsdb.ACL
+			if prot.Valid && aclText.Valid {
+				acl = fsdb.DecodeACL(prot.Bool, aclText.String)
+			}
 			if i, ok := idx[key(p)]; ok {
 				r := &b.Recs[i]
 				if r.IsDir != isDir {
 					conflict++ // 同じパスでフォルダとファイルが食い違う → 優先DB側を採用
 					continue
+				}
+				if r.ACL == nil {
+					r.ACL = acl
 				}
 				if isDir {
 					if r.Mtime == 0 {
@@ -186,7 +203,7 @@ func Merge(ctx context.Context, dbs []string, dbPath string, preferNewest bool, 
 			}
 			if isDir {
 				i := ensureDir(p)
-				b.Recs[i].Mtime, b.Recs[i].Flags = mtime, acc
+				b.Recs[i].Mtime, b.Recs[i].Flags, b.Recs[i].ACL = mtime, acc, acl
 				continue
 			}
 			j := strings.LastIndex(p, sep)
@@ -194,7 +211,7 @@ func Merge(ctx context.Context, dbs []string, dbPath string, preferNewest bool, 
 				continue
 			}
 			parent := ensureDir(trim(p[:j+1]))
-			idx[key(p)] = b.Add(fsdb.Record{Parent: parent, Size: size, Mtime: mtime, Name: p[j+1:], Flags: acc})
+			idx[key(p)] = b.Add(fsdb.Record{Parent: parent, Size: size, Mtime: mtime, Name: p[j+1:], Flags: acc, ACL: acl})
 		}
 		err = rows.Err()
 		rows.Close()

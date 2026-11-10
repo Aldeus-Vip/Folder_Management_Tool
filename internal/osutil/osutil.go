@@ -14,4 +14,5 @@ const (
 	OpenDBs    DialogKind = "dbmulti" // 複数選択(改行区切りで返す)
 	SaveDB     DialogKind = "savedb"
 	PickFolder DialogKind = "folder"
+	OpenCSV    DialogKind = "csv"
 )

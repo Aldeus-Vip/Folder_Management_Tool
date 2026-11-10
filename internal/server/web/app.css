@@ -298,3 +298,12 @@ button.mini { padding: 0 6px; font-size: 12px; }
 .lnk { color: var(--accent); font-weight: 700; }
 .g-row.vlink .nm { font-style: italic; color: var(--accent); }
 .g-row.vlink.broken .nm { color: var(--gone); text-decoration: line-through; }
+
+/* 複数選択のドロップダウン */
+.msel { position: relative; display: inline-block; }
+.msel-btn { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msel-btn.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.msel-pop { position: absolute; top: 30px; left: 0; z-index: 45; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px var(--shadow); padding: 6px; min-width: 280px; }
+.msel-pop label { display: block; padding: 3px 6px; border-radius: 4px; white-space: nowrap; cursor: pointer; }
+.msel-pop label:hover { background: var(--hover); }
+.msel-foot { border-top: 1px solid var(--line); margin-top: 4px; padding: 4px 6px 0; font-size: 12px; }

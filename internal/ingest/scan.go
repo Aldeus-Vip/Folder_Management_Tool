@@ -21,7 +21,9 @@ import (
 //
 // alias を指定すると、DBにはそのパス(SharePoint の URL など)で記録する。OneDrive の同期フォルダのように
 // 人によって実際の場所が異なるフォルダを、全員が同じパスで扱うため。
-func Scan(ctx context.Context, root, dbPath string, workers int, alias string, prog fsdb.Progress) (*Result, error) {
+//
+// aclMode はアクセス権限(NTFS の ACL)の取得: "" = 取得しない / "dirs" = フォルダだけ / "all" = フォルダとファイル。
+func Scan(ctx context.Context, root, dbPath string, workers int, alias, aclMode string, prog fsdb.Progress) (*Result, error) {
 	if prog == nil {
 		prog = func(string, int64, int64) {}
 	}
@@ -43,6 +45,22 @@ func Scan(ctx context.Context, root, dbPath string, workers int, alias string, p
 		b.Meta["alias_root"], b.Meta["local_root"], b.Meta["local_sep"] = ar, root, string(filepath.Separator)
 	}
 	b.Recs[0].Mtime = st.ModTime().Unix()
+	if aclMode != "" && aclMode != "dirs" && aclMode != "all" {
+		return nil, fmt.Errorf("不明なアクセス権限の取得方法: %s", aclMode)
+	}
+	var aclErrs atomic.Int64
+	getACL := func(r *fsdb.Record, path string) {
+		if aclMode == "" || (!r.IsDir && aclMode != "all") || r.Flags&fsdb.FlagAccess != 0 {
+			return
+		}
+		a, err := aclReader(path)
+		if err != nil {
+			aclErrs.Add(1)
+			return
+		}
+		r.ACL = a
+	}
+	getACL(&b.Recs[0], root)
 
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -77,7 +95,9 @@ func Scan(ctx context.Context, root, dbPath string, workers int, alias string, p
 			if r.IsDir {
 				r.Size = 0
 			}
-			items = append(items, item{r, filepath.Join(dir, e.Name())})
+			p := filepath.Join(dir, e.Name())
+			getACL(&r, p)
+			items = append(items, item{r, p})
 		}
 		<-sem
 		mu.Lock()
@@ -126,6 +146,7 @@ func Scan(ctx context.Context, root, dbPath string, workers int, alias string, p
 	b.Meta["source"] = "scan"
 	b.Meta["source_path"] = root
 	b.Meta["scanned_at"] = time.Now().Format("2006/01/02 15:04:05")
+	b.Meta["acl_mode"] = aclMode
 	if err := b.Finalize(ctx, dbPath, prog); err != nil {
 		return nil, err
 	}
@@ -133,8 +154,17 @@ func Scan(ctx context.Context, root, dbPath string, workers int, alias string, p
 	if errs.Load() > 0 {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("アクセスできなかった項目が %d 件あります(🔒 表示。中身・サイズは不明です。サマリーの「アクセス不可」から一覧できます)", errs.Load()))
 	}
+	if aclErrs.Load() > 0 {
+		res.Warnings = append(res.Warnings, fmt.Sprintf("アクセス権限を読み取れなかった項目が %d 件あります(権限の数には含まれません)", aclErrs.Load()))
+	}
+	if aclMode != "" && b.Recs[0].ACL == nil && aclErrs.Load() == 0 {
+		res.Warnings = append(res.Warnings, "この環境ではアクセス権限を取得できません(Windows で実行してください)")
+	}
 	return res, nil
 }
+
+// aclReader はアクセス権限の読み取り(テストで差し替える)。
+var aclReader = readACL
 
 // errMessage は読み込みエラーを利用者向けの文に直す(パスは行に表示されるので省く)。
 func errMessage(err error) string {

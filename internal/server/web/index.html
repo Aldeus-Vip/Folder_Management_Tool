@@ -73,6 +73,9 @@ window.TOKEN = "__TOKEN__";
       <span></span><span class="hint" style="grid-column:span 2">SharePoint を OneDrive で同期(ショートカット)したフォルダをスキャンする場合に、SharePoint の URL を入れます。
         DBには個人のパス(C:\Users\…)ではなくこのURLで記録され、全員が同じパスで作業・統合できます。実際の場所はPCごとに「⚙ オプション」で設定します。</span>
       <span>保存するDB名</span><input type="text" id="scan-db" placeholder="空欄なら フォルダ名_日時"><span></span>
+      <span>アクセス権限</span><select id="scan-acl"><option value="">取得しない</option><option value="dirs" selected>フォルダだけ取得する(推奨)</option><option value="all">フォルダとファイルを取得する(時間がかかります)</option></select><span></span>
+      <span></span><span class="hint" style="grid-column:span 2">SharePoint の「固有の権限」の数(ライブラリあたり上限 50,000)を確認するため、NTFS のアクセス権限を読み取ります。
+        ファイルに個別の権限を付けていることが多い場合だけ「フォルダとファイル」を選んでください。</span>
       <span>同時読み込み数</span><select id="scan-workers"><option>4</option><option>8</option><option selected>16</option><option>32</option><option>64</option></select><span></span>
       <span></span><button class="primary" id="scan-go">スキャン開始</button><span></span>
     </div>
@@ -91,6 +94,20 @@ window.TOKEN = "__TOKEN__";
       <span>重複時の優先</span><select id="mg-prefer"><option value="newest">データ取得日時が新しいDBを優先(推奨)</option><option value="order">一覧の上にあるDBを優先</option></select><span></span>
       <span>保存するDB名</span><input type="text" id="mg-db" placeholder="空欄なら merged_日時"><span></span>
       <span></span><button class="primary" id="mg-go">統合開始</button><span></span>
+    </div>
+  </div>
+  <div class="card">
+    <h2>③ SharePoint の一覧CSVを取り込む</h2>
+    <p class="hint">Power Automate などで出力した SharePoint のフォルダ・ファイルの一覧(CSV)から DB を作り、そのまま開きます。移行先の構成も同じ画面・同じ5Sルールで確認できます。<br>
+    ・CSV の列: <b>FullPath</b>(パス。区切りは /)・<b>IsFolder</b>(True/False)は必須。<b>Modified</b>(更新日時)・<b>Size</b>(バイト数)は任意。列の順番は自由です。<br>
+    ・全行に共通する最も深いフォルダがルートになります。CSV に行が無い途中のフォルダは自動で補完します。<br>
+    ・ファイル名が <code>SPTree_YYYYMMDD_HHMM.csv</code> なら、その日時(UTC)をデータ取得日時として記録します。</p>
+    <div class="form">
+      <span>CSVファイル</span><input type="text" id="sp-csv" placeholder="例: C:\Users\…\SPTree_20261110_0753.csv"><button data-dialog="csv" data-target="sp-csv">参照…</button>
+      <span>サイトのURL(任意)</span><input type="text" id="sp-prefix" placeholder="例: https://xxx.sharepoint.com"><span></span>
+      <span></span><span class="hint" style="grid-column:span 2">パスの前に付けて URL として記録します。入れておくと「ファイルを開く」「Windowsで開く」でブラウザの SharePoint の画面が開きます(パスが /sites/… で始まる場合はテナントのURLまで、ライブラリからのパスの場合はサイトのURLまで)。</span>
+      <span>保存するDB名</span><input type="text" id="sp-db" placeholder="空欄なら CSVと同じ名前"><span></span>
+      <span></span><button class="primary" id="sp-go">取り込み開始</button><span></span>
     </div>
   </div>
   <div class="hint">ブラウザのタブを閉じると、ツールは自動で終了します(スキャン・統合中は完了まで待ちます)。すぐに終了するには右上の「⏻ 終了」を押してください。</div>
@@ -161,9 +178,11 @@ window.TOKEN = "__TOKEN__";
   <div class="toolbar">
     <input type="text" id="ls-q" placeholder="名前(\ を含めるとパス)で検索" style="width:200px">
     <select id="ls-kind"><option value="">すべて</option><option value="file">ファイル</option><option value="dir">フォルダ</option></select>
-    <input type="text" id="ls-ext" placeholder="拡張子" style="width:64px">
+    <select id="ls-extnot" title="拡張子の条件"><option value="">拡張子が次のどれか</option><option value="1">拡張子が次のどれでもない(除く)</option></select>
+    <input type="text" id="ls-ext" placeholder="拡張子(複数可: jpg, png …)" style="width:170px" title="「,」・空白区切りで複数指定できます。拡張子なしは「(なし)」">
+    <button id="ls-extpick" title="移行しない拡張子(作業指示CSVの「初動移行の範囲」で除外にした拡張子)を入れる">除外リスト</button>
     <select id="ls-check"></select>
-    <select id="ls-state"></select>
+    <div class="msel" id="ls-state"></div>
     <select id="ls-tag"></select>
     <select id="ls-owner"></select>
     <input type="number" id="ls-min" placeholder="サイズ≥MB" style="width:96px" min="0">

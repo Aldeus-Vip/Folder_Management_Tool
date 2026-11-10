@@ -19,7 +19,7 @@ function fmtDate(t) {
   return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 const pct = (a, b) => b > 0 ? a / b * 100 : 0;
-const srcLabel = m => ({ excel: 'Excel取込', scan: 'フォルダスキャン', merge: 'DB統合' }[m.source] || m.source || '');
+const srcLabel = m => ({ excel: 'Excel取込', scan: 'フォルダスキャン', merge: 'DB統合', spcsv: 'SharePoint一覧CSV' }[m.source] || m.source || '');
 const store = {
   get(k, d) { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch (e) { } },
@@ -361,7 +361,7 @@ class PagedSource {
     this.loading.add(p);
     try {
       const r = await api(this.urlFn(p * this.ps, this.ps));
-      this.pages.set(p, r.rows); this.count = r.total; this.onTotal?.(r.total);
+      this.pages.set(p, r.rows); this.count = r.total; this.onTotal?.(r.total, r);
     } finally { this.loading.delete(p); }
   }
   forEach(fn) { for (const rows of this.pages.values()) rows.forEach(fn); }
@@ -506,6 +506,20 @@ const COL = {
     key: 'items', label: '項目数', w: 80, cls: 'num', tip: 'フォルダ自身 + 配下のファイル・フォルダの数(移行先の項目数の上限の確認用)',
     render: r => !r.dir ? '' : (r.f & FL.access) ? `<span class="muted" title="${esc(r.err || 'アクセス不可')}">不明</span>`
       : `<span title="フォルダ ${fmtNum(r.dc + 1)}(自身を含む) / ファイル ${fmtNum(r.fc)}">${fmtNum(1 + r.fc + r.dc)}</span>`,
+  },
+  // 整理画面(左)用: 「残り / 元」。移動・削除・保留を設定した分は残りから除く
+  itemsRem: {
+    key: 'items', label: '項目数(残り/元)', w: 130, cls: 'num', tip: '残り(未処理の項目数) / 元(スキャン時点。フォルダ自身 + 配下のファイル・フォルダ)。移動・削除・保留を設定した分は残りから除きます',
+    render: r => !r.dir ? '' : (r.f & FL.access) ? `<span class="muted" title="${esc(r.err || 'アクセス不可')}">不明</span>` : fracHTML(r.remItems || 0, 1 + r.fc + r.dc, fmtNum),
+  },
+  sizeRem: {
+    key: 'size', label: 'サイズ(残り/元)', w: 160, cls: 'num', sort: true, descFirst: true, tip: '残り(未処理のファイルの合計) / 元(スキャン時点)。移動・削除・保留を設定した分は残りから除きます',
+    render: r => r.dir && (r.f & FL.access) ? `<span class="muted" title="${esc(r.err || 'アクセス不可')}">不明</span>` : !r.dir ? (eff(r) ? `<span class="muted">${fmtSize(r.s)}</span>` : fmtSize(r.s)) : fracHTML(r.remS || 0, r.s, fmtSize),
+  },
+  // アクセス権限: 自身が固有の権限か + 配下(自身を含む)で固有の権限を持つ項目数
+  perm: {
+    key: 'perm', label: '固有の権限', w: 96, cls: 'num', tip: 'SharePoint で「固有の権限」になる項目(継承の無効化・直接の付与)。🔑 = この項目自身、数字 = 自身と配下の合計',
+    render: r => permHTML(r),
   },
   warn: { key: 'warn', label: '警告・整理のヒント', w: 200, render: warnHTML },
   action: { key: 'action', label: 'アクション(移動先)', w: 250, render: actHTML, sort: true },
@@ -663,10 +677,43 @@ function migrationEstimateHTML(e) {
     ${e.topExts.length ? `<p class="hint" style="margin-top:6px">Step2 で移動するファイルの拡張子(サイズ順): ${e.topExts.map(x => `${esc(x.label)} ${fmtNum(x.count)}件・${fmtSize(x.size)}`).join(' / ')}</p>` : ''}`;
 }
 
+// 「残り / 元」の表示(減った分と割合はマウスを重ねると表示)
+function fracHTML(rem, total, fmt) {
+  const cut = total - rem;
+  const t = cut > 0 ? `元 ${fmt(total)} から ${fmt(cut)} 減(-${pct(cut, total).toFixed(1)}%)` : 'まだ減っていません';
+  return `<span title="${esc(t)}">${cut > 0 ? `<b>${fmt(rem)}</b>` : fmt(rem)}<span class="muted"> / ${fmt(total)}</span></span>`;
+}
+
+// ===== アクセス権限 =====
+const PERM = { scanned: 1, protected: 2, explicit: 4, orphan: 8 };
+function permHTML(r) {
+  if (!r.perm && !r.permSub) return '';
+  const own = r.perm & (PERM.protected | PERM.explicit);
+  const why = [r.perm & PERM.protected ? '親からの継承を無効化' : '', r.perm & PERM.explicit ? '直接の付与あり' : '', r.perm & PERM.orphan ? '不明なアカウントあり' : ''].filter(Boolean).join(' / ');
+  const sub = r.dir && r.permSub ? fmtNum(r.permSub) : '';
+  const tip = (why || '親から引き継いだ権限のみ') + (r.dir ? `\n自身と配下で固有の権限を持つ項目: ${fmtNum(r.permSub || 0)}` : '');
+  return `<span title="${esc(tip)}">${own ? '🔑' : ''}${r.perm & PERM.orphan ? '<span style="color:var(--red)">?</span>' : ''} ${sub}</span>`;
+}
+function aclHTML(a, r) {
+  if (!a.scanned) return '<span class="muted">取得していません</span>';
+  const why = [a.protected ? '親からの継承を無効化' : '', a.aces.some(e => !e.inherited) ? '直接の付与あり' : ''].filter(Boolean).join(' / ');
+  const head = a.unique
+    ? `<div class="issue" style="margin:0 0 4px">🔑 SharePoint で<b>固有の権限</b>になります(${why})</div>`
+    : '<div class="muted" style="margin-bottom:4px">親フォルダから引き継いだ権限のみ(固有の権限になりません)</div>';
+  const sub = r.dir && r.permSub ? `<div class="muted" style="margin-bottom:4px">自身と配下で固有の権限を持つ項目: ${fmtNum(r.permSub)}</div>` : '';
+  if (!a.aces.length) return head + sub + '<span class="muted">付与なし(管理者以外はアクセスできない可能性があります)</span>';
+  const rows = a.aces.map(e => `<tr${e.inherited ? ' class="muted"' : ''}>
+    <td>${e.principal ? esc(e.principal) : `<span style="color:var(--red)" title="削除されたアカウントなど">不明なアカウント</span><div class="muted" style="font-size:11px">${esc(e.sid)}</div>`}</td>
+    <td>${e.deny ? '<b style="color:var(--red)">拒否</b>' : '許可'}</td><td>${esc(e.rightsLabel)}</td>
+    <td>${e.inherited ? '継承' : '<b>直接</b>'}</td><td style="font-size:11px">${r.dir ? esc(e.scopeLabel) : ''}</td></tr>`).join('');
+  return head + sub + `<table class="t" style="font-size:12px"><tr><th>付与先</th><th>種別</th><th>アクセス許可</th><th>継承</th><th>${r.dir ? '適用先' : ''}</th></tr>${rows}</table>`;
+}
+
 // ===== 整理後の項目数(ファイル + フォルダ)。移行先の上限(例: 900,000)と比べる =====
 function itemsBadgeHTML(e) {
-  const over = e.over > 0;
-  return `<span class="b ${over ? 'mig' : 'org'}" style="${over ? '' : 'background:var(--green-bg);color:var(--green)'}" title="設定したアクションを反映した、整理後に残るファイル + フォルダの数(サマリーに内訳)">整理後の見込み ${fmtNum(e.total)} / 上限 ${fmtNum(e.limit)}${over ? `(${fmtNum(e.over)} 超過)` : ''}</span>`;
+  const over = e.over > 0 || (e.sizeLimit > 0 && e.totalSize > e.sizeLimit);
+  const cur = e.current.files + e.current.folders;
+  return `<span class="b ${over ? 'mig' : 'org'}" style="${over ? '' : 'background:var(--green-bg);color:var(--green)'}" title="設定したアクションを反映した、整理後の見込み / 元(スキャン時点)。上限: 項目数 ${fmtNum(e.limit)}${e.sizeLimit ? ' / 容量 ' + fmtSize(e.sizeLimit) : ''}(サマリーに内訳)">整理後 ${fmtNum(e.total)} / ${fmtNum(cur)} 項目 ・ ${fmtSize(e.totalSize)} / ${fmtSize(e.current.size)}${e.over > 0 ? `(項目数の上限を ${fmtNum(e.over)} 超過)` : ''}</span>`;
 }
 const ItemsCard = {
   async load(el) {
@@ -675,27 +722,64 @@ const ItemsCard = {
     if (e) this.render(el, e);
   },
   render(el, e) {
-    const ff = f => `<td class="num">${fmtNum(f.files)}</td><td class="num">${fmtNum(f.folders)}</td><td class="num"><b>${fmtNum(f.files + f.folders)}</b></td>`;
-    const p = Math.min(100, pct(e.total, e.limit));
-    el.innerHTML = `<h2>整理後の項目数(ファイル + フォルダ)</h2>
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <div class="tr" style="width:240px;height:12px;background:var(--track);border-radius:6px;overflow:hidden"><i style="display:block;height:100%;width:${p}%;background:${e.over > 0 ? 'var(--red)' : 'var(--bar)'}"></i></div>
-        <span>整理後の見込み <b>${fmtNum(e.total)}</b> / 上限 ${fmtNum(e.limit)} 項目</span>
-        ${e.over > 0 ? `<span class="b mig">${fmtNum(e.over)} 項目の削減が必要</span>` : `<span class="b" style="background:var(--green-bg);color:var(--green)">上限内(あと ${fmtNum(-e.over)} 項目)</span>`}
-        <span class="muted">現在 ${fmtNum(e.current.files + e.current.folders)} 項目</span>
-        <span class="grow"></span><label>上限 <input type="number" id="it-limit" value="${e.limit}" min="1" style="width:110px"></label><button id="it-save">変更</button>
+    const cur = e.current.files + e.current.folders;
+    // 見込み / 元、減った量、上限との比較
+    const line = (label, now, orig, limit, fmt) => {
+      const cut = orig - now, over = limit > 0 && now > limit;
+      const p = limit > 0 ? Math.min(100, pct(now, limit)) : pct(now, orig);
+      return `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:4px 0">
+        <b style="width:76px">${label}</b>
+        <div class="tr" style="width:200px;height:12px;background:var(--track);border-radius:6px;overflow:hidden" title="${limit > 0 ? '上限に対する割合' : '元に対する割合'}"><i style="display:block;height:100%;width:${p}%;background:${over ? 'var(--red)' : 'var(--bar)'}"></i></div>
+        <span style="font-size:15px"><b>${fmt(now)}</b> <span class="muted">/ 元 ${fmt(orig)}</span></span>
+        <span class="muted">${cut > 0 ? `${fmt(cut)} 減(-${pct(cut, orig).toFixed(1)}%)` : cut < 0 ? `${fmt(-cut)} 増(仮想フォルダの追加など)` : '減っていません'}</span>
+        ${limit > 0 ? (over ? `<span class="b mig">上限 ${fmt(limit)} を ${fmt(now - limit)} 超過</span>` : `<span class="b" style="background:var(--green-bg);color:var(--green)">上限 ${fmt(limit)} まで あと ${fmt(limit - now)}</span>`) : '<span class="muted">上限: 未設定</span>'}
+      </div>`;
+    };
+    const ff = f => `<td class="num">${fmtNum(f.files)}</td><td class="num">${fmtNum(f.folders)}</td><td class="num"><b>${fmtNum(f.files + f.folders)}</b></td><td class="num">${fmtSize(f.size)}</td>`;
+    el.innerHTML = `<h2>整理後の項目数・容量(見込み / 元)</h2>
+      ${line('項目数', e.total, cur, e.limit, fmtNum)}
+      ${line('容量', e.totalSize, e.current.size, e.sizeLimit, fmtSize)}
+      ${e.perm.scanned ? line('固有の権限', e.perm.total, e.perm.current, e.perm.limit, fmtNum) : ''}
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
+        <label>項目数の上限 <input type="number" id="it-limit" value="${e.limit}" min="1" style="width:110px"></label>
+        <label>容量の上限 <input type="number" id="it-slimit" value="${e.sizeLimit ? +(e.sizeLimit / 1024 ** 3).toFixed(1) : ''}" min="0" step="0.1" style="width:90px" placeholder="未設定"> GB</label>
+        ${e.perm.scanned ? `<label>固有の権限の上限 <input type="number" id="it-plimit" value="${e.perm.limit}" min="1" style="width:90px"></label>` : ''}
+        <button id="it-save">変更</button></div>
+      ${e.perm.scanned ? '' : '<p class="hint" style="margin:4px 0 0">固有の権限の数: このDBはアクセス権限を取得していません(「データ取り込み → スキャン」で「アクセス権限」を選ぶと確認できます)。</p>'}
+      <div style="margin-top:6px;padding:6px 8px;background:var(--bg);border-radius:8px">
+        <label class="inl" style="margin:0"><input type="checkbox" id="it-dropon" ${e.dropOn ? 'checked' : ''}> <b>移行しない拡張子</b>のファイルを見込みから除く(試算)</label>
+        <div style="display:flex;gap:6px;margin-top:4px"><input type="text" id="it-drop" style="flex:1" value="${esc(e.dropExts.join(', '))}" placeholder="例: jpg, png, mp4, zip(「,」・空白区切り。Excel の表の貼り付けも可)">
+          <button id="it-droppick" title="作業指示CSVの「初動移行の範囲」で除外にした拡張子を入れる">除外リストから</button></div>
+        ${e.dropOn ? `<p class="hint" style="margin:4px 0 0">除いた分: ファイル ${fmtNum(e.dropped.files)} 件・${fmtSize(e.dropped.size)}(削除を設定した分は「削除で減る」に含めます)。中身がこれだけのフォルダは空になるので、残さないものとして数えます。</p>` : ''}
       </div>
-      <table class="t" style="margin-top:8px"><tr><th></th><th class="num">ファイル</th><th class="num">フォルダ</th><th class="num">合計</th></tr>
-        <tr><td>現在(スキャン時点)</td>${ff(e.current)}</tr>
-        <tr><td>新構成: 仮想フォルダ</td><td></td><td class="num">${fmtNum(e.vfolders)}</td><td class="num"><b>${fmtNum(e.vfolders)}</b></td></tr>
+      <table class="t" style="margin-top:8px"><tr><th></th><th class="num">ファイル</th><th class="num">フォルダ</th><th class="num">項目数</th><th class="num">容量</th></tr>
+        <tr><td>元(スキャン時点)</td>${ff(e.current)}</tr>
+        <tr><td>新構成: 仮想フォルダ</td><td></td><td class="num">${fmtNum(e.vfolders)}</td><td class="num"><b>${fmtNum(e.vfolders)}</b></td><td></td></tr>
         <tr><td>新構成: 移動する項目</td>${ff(e.moved)}</tr>
         <tr><td>今の場所に残る: 未処理</td>${ff(e.kept)}</tr>
         <tr><td>今の場所に残る: 保留</td>${ff(e.held)}</tr>
         <tr class="muted"><td>削除で減る</td>${ff(e.deleted)}</tr>
-        <tr class="muted"><td>空になって残らない旧フォルダ</td><td></td><td class="num">${fmtNum(e.emptied)}</td><td class="num">${fmtNum(e.emptied)}</td></tr></table>
-      <p class="hint">整理後の見込み = 仮想フォルダ + 移動する項目 + 未処理 + 保留。中身をすべて移動・削除したフォルダは残さない前提です(元から空のフォルダ・アクセスできなかったフォルダは残るものとして数えます)。<br>
+        ${e.dropOn ? `<tr class="muted"><td>移行しない拡張子で減る(試算)</td>${ff(e.dropped)}</tr>` : ''}
+        <tr class="muted"><td>空になって残らない旧フォルダ</td><td></td><td class="num">${fmtNum(e.emptied)}</td><td class="num">${fmtNum(e.emptied)}</td><td></td></tr></table>
+      <p class="hint">見込み = 仮想フォルダ + 移動する項目 + 未処理 + 保留(容量は移動 + 未処理 + 保留のファイルの合計)。移動した分も含めて、アクションを反映した整理後の数です。<br>
+      中身をすべて移動・削除したフォルダは残さない前提です(元から空のフォルダ・アクセスできなかったフォルダは残るものとして数えます)。<br>
+      整理画面の左の「項目数」「サイズ」は、各フォルダの<b>残り(未処理)/ 元</b>です(移動・削除・保留を設定した分を除いた残り)。<br>
+      ${e.perm.scanned ? '固有の権限 = 親からの継承を無効化した、または直接の付与がある項目(ルートを除く)。整理後は削除・移行しない分・空になって残らないフォルダを除いて数えます。<br>' : ''}
       複数の部門で上限を共有する場合は、各部門のDBの見込みを合計するか、「データ取り込み → ② 複数のDBを統合」で1つにまとめたDBで確認してください。</p>`;
-    $('#it-save', el).onclick = guard(async () => { this.render(el, await api('/api/itemlimit', { limit: +$('#it-limit', el).value })); toast('上限を変更しました'); });
+    const save = async () => {
+      const gb = +$('#it-slimit', el).value || 0;
+      this.render(el, await api('/api/itemlimit', { limit: +$('#it-limit', el).value, sizeLimit: Math.round(gb * 1024 ** 3), permLimit: +($('#it-plimit', el)?.value || 0), drop: $('#it-drop', el).value, dropOn: $('#it-dropon', el).checked }));
+    };
+    $('#it-save', el).onclick = guard(async () => { await save(); toast('変更しました'); });
+    $('#it-dropon', el).onchange = guard(save);
+    $('#it-drop', el).onkeydown = e2 => { if (e2.key === 'Enter') guard(save)(); };
+    $('#it-droppick', el).onclick = guard(async () => {
+      const sc = await api('/api/migscope');
+      if (!sc.exts.length) return toast('「アクション一覧 → 作業指示CSV出力…」で初動移行の範囲(拡張子)を入力してください', true);
+      $('#it-drop', el).value = sc.exts.join(', ');
+      $('#it-dropon', el).checked = true;
+      await save();
+    });
   },
 };
 
@@ -818,9 +902,11 @@ const Props = {
       <dt>期限</dt><dd>${r.due ? dueHTML(r.due) : '<span class="muted">永続(期限なし)</span>'}</dd>
       <dt>担当</dt><dd>${ownerHTML(r) || '<span class="muted">なし</span>'}</dd>
       <dt>タグ</dt><dd>${tagsHTML(r.tags) || '<span class="muted">なし</span>'}</dd>
+      ${r.perm ? `<dt>アクセス権限</dt><dd data-acl><span class="muted">読み込み中…</span></dd>` : ''}
       ${r.r5s ? `<dt>5Sルール</dt><dd><div class="issue block" style="margin:0">${esc(r.r5s).replace(/\n/g, '<br>')}</div></dd>` : ''}
       <dt>メモ</dt><dd style="white-space:pre-wrap">${esc(r.memo) || '<span class="muted">なし</span>'}</dd></dl>
       <div class="btns">${r.dir ? '' : '<button data-p="open">📂 ファイルを開く</button>'}<button data-p="reveal">Windowsで開く(場所を表示)</button><button data-p="copy">パスをコピー</button></div>`, null, '', '閉じる');
+    if (r.perm) api('/api/acl?id=' + r.id).then(a => { const d = $('[data-acl]', m); if (d) d.innerHTML = aclHTML(a, r); }).catch(() => {});
     $$('[data-p]', m).forEach(b => b.onclick = guard(async () => {
       if (b.dataset.p === 'open') return openFile(r);
       if (b.dataset.p === 'copy') { await navigator.clipboard.writeText(r.path); return toast('パスをコピーしました'); }
@@ -1115,6 +1201,7 @@ async function refreshState() {
   const db = S.state.db;
   S.settings = db?.settings || null;
   S.rules = db?.rules || null;
+  S.acl = !!db?.acl;
   S.code = db?.code || '';
   $('#dbname').textContent = db ? '📄 ' + db.path.split(/[\\/]/).pop() : 'DB未選択';
   $('#dbname').title = db ? db.path : '';
@@ -1836,7 +1923,8 @@ Views.organize = {
   },
   gaugeMode() { return store.get('fm-gauge2', 'remain'); },
   columns() {
-    const c = cols({ key: 'name', label: '名前(現在)', w: 400, render: r => nameCell(r, true) }, 'depth', 'size', 'items');
+    const c = cols({ key: 'name', label: '名前(現在)', w: 400, render: r => nameCell(r, true) }, 'depth', 'sizeRem', 'itemsRem');
+    if (S.acl) c.push(...cols('perm'));
     const mode = this.gaugeMode();
     if (mode !== 'off') c.push({
       key: 'gauge', w: 140, label: mode === 'remain' ? '未処理(ファイル数)' : mode === 'root' ? 'サイズ比(全体)' : 'サイズ比(親内)',
@@ -1945,7 +2033,26 @@ function listMenu(rows, e, r) {
 }
 
 // ===== 検索・リスト =====
-const STATES = [['', '処理状況: すべて'], ['unhandled', '未処理'], ['handled', '処理済み(親フォルダの設定を含む)'], ['own', '個別に設定あり'], ['delete', '削除(個別)'], ['move', '移動(個別)'], ['hold', '保留(個別)'], ['ihold', '保留(親フォルダの設定を含む)']];
+const STATES = [['unhandled', '未処理'], ['ihold', '保留(親フォルダの設定を含む)'], ['hold', '保留(個別)'],
+  ['imove', '移動(親フォルダの設定を含む)'], ['move', '移動(個別)'], ['idelete', '削除(親フォルダの設定を含む)'], ['delete', '削除(個別)'],
+  ['handled', '処理済み(親フォルダの設定を含む)'], ['own', '個別に設定あり']];
+
+// 複数選択のドロップダウン(チェックしたもののどれかに当てはまる項目を表示)
+function multiSelect(el, options, title, onChange) {
+  let sel = [];
+  const label = () => sel.length ? `${title}: ${sel.map(k => options.find(o => o[0] === k)?.[1].replace('親フォルダの設定を含む', '親含む').replace('親フォルダの設定を含む', '親含む')).join('・')}` : `${title}: すべて`;
+  el.innerHTML = `<button type="button" class="msel-btn"></button><div class="msel-pop" hidden>
+    ${options.map(([k, l]) => `<label><input type="checkbox" value="${k}"> ${esc(l)}</label>`).join('')}
+    <div class="msel-foot"><a data-clear>すべて(選択を解除)</a></div></div>`;
+  const btn = $('.msel-btn', el), pop = $('.msel-pop', el);
+  const sync = () => { btn.textContent = label() + ' ▾'; btn.classList.toggle('on', sel.length > 0); $$('input', pop).forEach(c => c.checked = sel.includes(c.value)); };
+  btn.onclick = e => { e.stopPropagation(); pop.hidden = !pop.hidden; };
+  document.addEventListener('mousedown', e => { if (!el.contains(e.target)) pop.hidden = true; });
+  $$('input', pop).forEach(c => c.onchange = () => { sel = options.map(o => o[0]).filter(k => k === c.value ? c.checked : sel.includes(k)); sync(); onChange(); });
+  $('[data-clear]', pop).onclick = () => { sel = []; sync(); onChange(); };
+  sync();
+  return { get: () => sel.join(','), set: v => { sel = (v || '').split(',').filter(k => options.some(o => o[0] === k)); sync(); } };
+}
 Views.list = {
   reset() {
     if (!this.grid) {
@@ -1964,9 +2071,17 @@ Views.list = {
       $('#ls-clear').onclick = () => { this.setForm({}); this.search(); };
       $('#ls-csv').onclick = () => download('/api/export/list.csv', this.params());
       $('#ls-bulk').onclick = () => this.bulk();
+      // 移行しない拡張子(初動移行の範囲で「除外」にした拡張子)を入れる
+      $('#ls-extpick').onclick = guard(async () => {
+        const sc = await api('/api/migscope');
+        if (!sc.exts.length) return toast('「アクション一覧 → 作業指示CSV出力…」で初動移行の範囲(拡張子)を入力してください', true);
+        $('#ls-ext').value = sc.exts.join(', ');
+        if (sc.mode !== 'exclude') toast('初動移行の範囲は「移行した拡張子」として保存されています。条件(含む/除く)を確認してください');
+        this.search();
+      });
     }
     $('#ls-check').innerHTML = '<option value="">警告・ヒント: 指定なし</option>' + S.checks.map(c => `<option value="${c.key}">[${esc(c.group)}] ${esc(c.label)}</option>`).join('');
-    $('#ls-state').innerHTML = STATES.map(([k, l]) => `<option value="${k}">${l}</option>`).join('');
+    if (!this.stateSel) this.stateSel = multiSelect($('#ls-state'), STATES, '処理状況', () => this.search());
     this.scope = null;
     this.setForm({});
     this.ran = false;
@@ -1974,8 +2089,8 @@ Views.list = {
   ownerOptions() { const cur = $('#ls-owner').value; $('#ls-owner').innerHTML = ownerOptionsHTML(cur, '担当: 指定なし'); $('#ls-owner').value = cur; },
   tagOptions() { const cur = $('#ls-tag').value; $('#ls-tag').innerHTML = '<option value="">タグ: 指定なし</option>' + S.tags.map(t => `<option>${esc(t)}</option>`).join(''); $('#ls-tag').value = cur; },
   setForm(a) {
-    $('#ls-q').value = a.q || ''; $('#ls-kind').value = a.kind || ''; $('#ls-ext').value = a.ext || '';
-    $('#ls-check').value = a.check || ''; $('#ls-state').value = a.state || '';
+    $('#ls-q').value = a.q || ''; $('#ls-kind').value = a.kind || ''; $('#ls-ext').value = a.ext || ''; $('#ls-extnot').value = a.extNot ? '1' : '';
+    $('#ls-check').value = a.check || ''; this.stateSel.set(a.state || '');
     this.tagOptions(); $('#ls-tag').value = a.tag || '';
     this.ownerOptions(); $('#ls-owner').value = a.owner || '';
     $('#ls-min').value = ''; $('#ls-before').value = '';
@@ -1992,7 +2107,7 @@ Views.list = {
     }
   },
   params() {
-    const p = { q: $('#ls-q').value, kind: $('#ls-kind').value, ext: $('#ls-ext').value, check: $('#ls-check').value, state: $('#ls-state').value, tag: $('#ls-tag').value, owner: $('#ls-owner').value };
+    const p = { q: $('#ls-q').value, kind: $('#ls-kind').value, ext: $('#ls-ext').value, extNot: $('#ls-ext').value.trim() ? $('#ls-extnot').value : '', check: $('#ls-check').value, state: this.stateSel.get(), tag: $('#ls-tag').value, owner: $('#ls-owner').value };
     const mb = +$('#ls-min').value; if (mb > 0) p.minSize = Math.round(mb * 1048576);
     const d = $('#ls-before').value; if (d) p.before = Math.floor(new Date(d + 'T00:00:00').getTime() / 1000);
     if (this.scope) p[this.scope.k] = this.scope.v;
@@ -2005,7 +2120,10 @@ Views.list = {
     const p = self.params();
     $('#ls-count').textContent = '検索中…';
     const src = new PagedSource((off, lim) => '/api/search?' + new URLSearchParams({ ...p, offset: off, limit: lim }),
-      n => $('#ls-count').textContent = `${fmtNum(n)} 件`);
+      (n, r) => {
+        const st = r.stats;
+        $('#ls-count').textContent = st ? `${fmtNum(n)} 件(ファイル ${fmtNum(st.files)} / フォルダ ${fmtNum(st.folders)})・${fmtSize(st.size)}` : `${fmtNum(n)} 件`;
+      });
     await src.init();
     self.grid.setSource(src, keep === true);
     self.ran = true;
@@ -2342,7 +2460,12 @@ function initImport() {
     if (r.path) t.value = r.path;
   }));
   $('#scan-go').onclick = guard(async () => {
-    await api('/api/scan', { root: $('#scan-root').value, db: $('#scan-db').value, workers: +$('#scan-workers').value, alias: $('#scan-alias').value });
+    await api('/api/scan', { root: $('#scan-root').value, db: $('#scan-db').value, workers: +$('#scan-workers').value, alias: $('#scan-alias').value, acl: $('#scan-acl').value });
+    Job.watch();
+  });
+  $('#sp-go').onclick = guard(async () => {
+    if (!$('#sp-csv').value.trim()) return toast('CSVファイルを指定してください', true);
+    await api('/api/import/spcsv', { path: $('#sp-csv').value, db: $('#sp-db').value, prefix: $('#sp-prefix').value });
     Job.watch();
   });
   $('#job-cancel').onclick = guard(() => api('/api/job/cancel', {}));

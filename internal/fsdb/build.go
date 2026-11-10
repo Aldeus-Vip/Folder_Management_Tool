@@ -23,6 +23,7 @@ type Record struct {
 	Name   string
 	Flags  int    // 入力時点で分かっているフラグ(アクセス不可など)
 	Err    string // 読み込みエラーの内容(アクセス拒否など)
+	ACL    *ACL   // アクセス権限(取得した場合だけ)
 }
 
 // Builder は取込元(Excel/スキャン)に依存しない共通の構築器。
@@ -298,6 +299,26 @@ func (b *Builder) Finalize(ctx context.Context, dbPath string, prog Progress) er
 			}
 		}
 	}
+	// アクセス権限(同じ内容は1行にまとめる)
+	defs := map[string]int64{}
+	for k := 0; k < n; k++ {
+		a := recs[order[k]].ACL
+		if a == nil {
+			continue
+		}
+		text := a.encode()
+		def, ok := defs[text]
+		if !ok {
+			def = int64(len(defs) + 1)
+			defs[text] = def
+			if _, err := tx.Exec(`INSERT INTO acl_defs VALUES(?,?,?,?)`, def, text, len(a.ACEs), b2i(a.Orphan())); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(`INSERT INTO acls VALUES(?,?,?,?)`, k+1, def, b2i(a.Protected), a.Explicit()); err != nil {
+			return err
+		}
+	}
 	meta := map[string]string{
 		"sep":        b.Sep,
 		"root":       recs[0].Name,
@@ -335,4 +356,11 @@ func (b *Builder) Finalize(ctx context.Context, dbPath string, prog Progress) er
 	}
 	ok = true
 	return nil
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

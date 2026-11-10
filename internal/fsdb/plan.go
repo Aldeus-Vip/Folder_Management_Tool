@@ -37,7 +37,10 @@ CREATE TABLE IF NOT EXISTS node_errors(node_id INTEGER PRIMARY KEY, message TEXT
 -- アクションが及ぶ範囲(互いに素な区間)。検索の「未処理/処理済み」絞り込み用
 CREATE TABLE IF NOT EXISTS plan_cover(s INTEGER PRIMARY KEY, e INTEGER NOT NULL);
 -- 5Sルールを現在のフォルダ構成に当てはめた結果(ルールを変えたときに作り直す)
-CREATE TABLE IF NOT EXISTS rule_hits(node_id INTEGER PRIMARY KEY, msg TEXT NOT NULL);`
+CREATE TABLE IF NOT EXISTS rule_hits(node_id INTEGER PRIMARY KEY, msg TEXT NOT NULL);
+-- アクセス権限(スキャン時に取得した場合だけ。同じ内容の ACL は acl_defs の1行にまとめる)
+CREATE TABLE IF NOT EXISTS acl_defs(id INTEGER PRIMARY KEY, text TEXT NOT NULL, total INTEGER NOT NULL, orphan INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS acls(node_id INTEGER PRIMARY KEY, def INTEGER NOT NULL, protected INTEGER NOT NULL, explicit INTEGER NOT NULL);`
 
 func ensurePlanSchema(db *sql.DB) error {
 	if _, err := db.Exec(planSchema); err != nil {
@@ -84,6 +87,24 @@ type prefix struct {
 	files []int32 // files[i] = ID が i 以下のファイル数
 	nodes []int32 // nodes[i] = ID が i 以下の項目数(ファイル + フォルダ)
 	size  []int64
+	uniq  []int32 // uniq[i] = ID が i 以下で固有の権限を持つ項目数(ルートを除く。権限を取得していなければ nil)
+}
+
+// unique は区間 [a, b] で固有の権限を持つ項目数。
+func (p *prefix) unique(a, b int64) int64 {
+	if p.uniq == nil {
+		return 0
+	}
+	if a < 1 {
+		a = 1
+	}
+	if b >= int64(len(p.uniq)) {
+		b = int64(len(p.uniq)) - 1
+	}
+	if a > b {
+		return 0
+	}
+	return int64(p.uniq[b] - p.uniq[a-1])
 }
 
 // items は区間 [a, b] の項目数(ファイル + フォルダ)。
@@ -237,8 +258,52 @@ func (s *Store) loadPrefix() error {
 		}
 		prev = id
 	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := p.loadUnique(s.DB, n); err != nil {
+		return err
+	}
 	s.pre = p
-	return rows.Err()
+	return nil
+}
+
+func (p *prefix) loadUnique(db *sql.DB, n int64) error {
+	rows, err := db.Query(`SELECT node_id FROM acls WHERE (protected=1 OR explicit>0) AND node_id>1 ORDER BY node_id`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var u []int32
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		if id > n {
+			continue
+		}
+		if u == nil {
+			u = make([]int32, n+1)
+		}
+		u[id] = 1
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if u == nil {
+		var any int
+		db.QueryRow(`SELECT count(*) FROM acls`).Scan(&any)
+		if any == 0 {
+			return nil
+		}
+		u = make([]int32, n+1) // 取得したが固有の権限は無い
+	}
+	for i := int64(1); i <= n; i++ {
+		u[i] += u[i-1]
+	}
+	p.uniq = u
+	return nil
 }
 
 // ensureIndex はアクションの区間インデックスと仮想フォルダのキャッシュを用意する。
@@ -387,8 +452,9 @@ func (s *Store) enrich(ns []Node) error {
 		}
 		x.Inner, x.InnerS = s.inner(x.ID, x.End, x.IsDir, x.Size)
 		x.InnerItems = s.innerItems(x.ID, x.End, x.IsDir)
+		x.PermSub = s.pre.unique(x.ID, x.End)
 		if x.Action == "" && x.IAction == "" {
-			x.Rem, x.RemS = x.Inner, x.InnerS
+			x.Rem, x.RemS, x.RemItems = x.Inner, x.InnerS, x.InnerItems
 		}
 	}
 	return nil
