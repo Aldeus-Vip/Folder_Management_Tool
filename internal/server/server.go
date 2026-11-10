@@ -96,6 +96,7 @@ func (a *App) Handler() http.Handler {
 		"POST /api/bye":              a.apiBye,
 		"POST /api/scan":             a.apiScan,
 		"POST /api/merge":            a.apiMerge,
+		"POST /api/import/spcsv":     a.apiImportSPCSV,
 		"POST /api/dbinfo":           a.apiDBInfo,
 		"GET /api/job":               a.apiJob,
 		"POST /api/job/cancel":       a.apiJobCancel,
@@ -568,6 +569,30 @@ func (a *App) apiScan(r *http.Request) (any, error) {
 	}
 	return a.startJob("scan", db, func(ctx context.Context, prog fsdb.Progress) (*ingest.Result, error) {
 		return ingest.Scan(ctx, root, db, req.Workers, req.Alias, req.ACL, prog)
+	})
+}
+
+// apiImportSPCSV は SharePoint の一覧CSV(Power Automate などで出力)から DB を作って開く。
+func (a *App) apiImportSPCSV(r *http.Request) (any, error) {
+	var req struct {
+		Path   string
+		DB     string
+		Prefix string // サイトの URL(例 https://xxx.sharepoint.com)。任意
+	}
+	if err := decode(r, &req); err != nil {
+		return nil, err
+	}
+	p := cleanPath(req.Path)
+	if st, err := os.Stat(p); err != nil || st.IsDir() {
+		return nil, badRequest("CSVが見つかりません: %s", p)
+	}
+	base := strings.TrimSuffix(filepath.Base(p), filepath.Ext(p))
+	db, err := a.resolveDBPath(req.DB, base)
+	if err != nil {
+		return nil, err
+	}
+	return a.startJob("spcsv", db, func(ctx context.Context, prog fsdb.Progress) (*ingest.Result, error) {
+		return ingest.ImportSPCSV(ctx, p, db, req.Prefix, prog)
 	})
 }
 

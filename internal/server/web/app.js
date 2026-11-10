@@ -19,7 +19,7 @@ function fmtDate(t) {
   return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 const pct = (a, b) => b > 0 ? a / b * 100 : 0;
-const srcLabel = m => ({ excel: 'Excel取込', scan: 'フォルダスキャン', merge: 'DB統合' }[m.source] || m.source || '');
+const srcLabel = m => ({ excel: 'Excel取込', scan: 'フォルダスキャン', merge: 'DB統合', spcsv: 'SharePoint一覧CSV' }[m.source] || m.source || '');
 const store = {
   get(k, d) { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch (e) { } },
@@ -2461,6 +2461,11 @@ function initImport() {
   }));
   $('#scan-go').onclick = guard(async () => {
     await api('/api/scan', { root: $('#scan-root').value, db: $('#scan-db').value, workers: +$('#scan-workers').value, alias: $('#scan-alias').value, acl: $('#scan-acl').value });
+    Job.watch();
+  });
+  $('#sp-go').onclick = guard(async () => {
+    if (!$('#sp-csv').value.trim()) return toast('CSVファイルを指定してください', true);
+    await api('/api/import/spcsv', { path: $('#sp-csv').value, db: $('#sp-db').value, prefix: $('#sp-prefix').value });
     Job.watch();
   });
   $('#job-cancel').onclick = guard(() => api('/api/job/cancel', {}));

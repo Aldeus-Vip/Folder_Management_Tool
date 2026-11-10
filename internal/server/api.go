@@ -167,6 +167,9 @@ func (a *App) apiOpenFile(r *http.Request, s *fsdb.Store) (any, error) {
 		return nil, badRequest("フォルダは開けません")
 	}
 	lp := a.localPath(s, n.Path)
+	if u, ok := webURL(lp); ok { // SharePoint の一覧CSVから作ったDB: ブラウザで開く
+		return map[string]any{"url": u}, osutil.OpenBrowser(u)
+	}
 	if st, err := os.Stat(lp); err != nil || st.IsDir() {
 		return nil, badRequest("このPCからはアクセスできません(移動・削除済み、権限がない、または「このPCでの実際の場所」の設定が違う可能性があります): %s", lp)
 	}
@@ -186,6 +189,12 @@ func (a *App) apiReveal(r *http.Request, s *fsdb.Store) (any, error) {
 		return nil, err
 	}
 	lp := a.localPath(s, n.Path)
+	if u, ok := webURL(lp); ok { // URL のパス: フォルダはそのまま、ファイルは置き場所のフォルダをブラウザで開く
+		if !n.IsDir {
+			u, _ = webURL(lp[:strings.LastIndex(lp, "/")])
+		}
+		return map[string]any{"url": u}, osutil.OpenBrowser(u)
+	}
 	if _, err := os.Stat(lp); err != nil {
 		return nil, badRequest("このPCからはアクセスできません: %s", lp)
 	}
@@ -625,4 +634,19 @@ func (a *App) apiLocalRoot(r *http.Request, s *fsdb.Store) (any, error) {
 		return nil, err
 	}
 	return a.apiState(r)
+}
+
+// webURL は URL のパス(https://…/サイト/ライブラリ/フォルダ)を、ブラウザで開ける形(各部分をエンコード)にする。
+func webURL(p string) (string, bool) {
+	i := strings.Index(p, "://")
+	if i <= 0 || !strings.HasPrefix(strings.ToLower(p), "http") {
+		return "", false
+	}
+	rest := p[i+3:]
+	host, path, _ := strings.Cut(rest, "/")
+	segs := strings.Split(path, "/")
+	for k, s := range segs {
+		segs[k] = url.PathEscape(s)
+	}
+	return p[:i+3] + host + "/" + strings.Join(segs, "/"), true
 }

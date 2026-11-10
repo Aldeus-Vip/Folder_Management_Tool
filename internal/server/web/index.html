@@ -96,6 +96,20 @@ window.TOKEN = "__TOKEN__";
       <span></span><button class="primary" id="mg-go">統合開始</button><span></span>
     </div>
   </div>
+  <div class="card">
+    <h2>③ SharePoint の一覧CSVを取り込む</h2>
+    <p class="hint">Power Automate などで出力した SharePoint のフォルダ・ファイルの一覧(CSV)から DB を作り、そのまま開きます。移行先の構成も同じ画面・同じ5Sルールで確認できます。<br>
+    ・CSV の列: <b>FullPath</b>(パス。区切りは /)・<b>IsFolder</b>(True/False)は必須。<b>Modified</b>(更新日時)・<b>Size</b>(バイト数)は任意。列の順番は自由です。<br>
+    ・全行に共通する最も深いフォルダがルートになります。CSV に行が無い途中のフォルダは自動で補完します。<br>
+    ・ファイル名が <code>SPTree_YYYYMMDD_HHMM.csv</code> なら、その日時(UTC)をデータ取得日時として記録します。</p>
+    <div class="form">
+      <span>CSVファイル</span><input type="text" id="sp-csv" placeholder="例: C:\Users\…\SPTree_20261110_0753.csv"><button data-dialog="csv" data-target="sp-csv">参照…</button>
+      <span>サイトのURL(任意)</span><input type="text" id="sp-prefix" placeholder="例: https://xxx.sharepoint.com"><span></span>
+      <span></span><span class="hint" style="grid-column:span 2">パスの前に付けて URL として記録します。入れておくと「ファイルを開く」「Windowsで開く」でブラウザの SharePoint の画面が開きます(パスが /sites/… で始まる場合はテナントのURLまで、ライブラリからのパスの場合はサイトのURLまで)。</span>
+      <span>保存するDB名</span><input type="text" id="sp-db" placeholder="空欄なら CSVと同じ名前"><span></span>
+      <span></span><button class="primary" id="sp-go">取り込み開始</button><span></span>
+    </div>
+  </div>
   <div class="hint">ブラウザのタブを閉じると、ツールは自動で終了します(スキャン・統合中は完了まで待ちます)。すぐに終了するには右上の「⏻ 終了」を押してください。</div>
 </section>
 
