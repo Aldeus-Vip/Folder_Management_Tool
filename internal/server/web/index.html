@@ -104,8 +104,9 @@ window.TOKEN = "__TOKEN__";
     ・ファイル名が <code>SPTree_YYYYMMDD_HHMM.csv</code> なら、その日時(UTC)をデータ取得日時として記録します。</p>
     <div class="form">
       <span>CSVファイル</span><input type="text" id="sp-csv" placeholder="例: C:\Users\…\SPTree_20261110_0753.csv"><button data-dialog="csv" data-target="sp-csv">参照…</button>
-      <span>サイトのURL(任意)</span><input type="text" id="sp-prefix" placeholder="例: https://xxx.sharepoint.com"><span></span>
-      <span></span><span class="hint" style="grid-column:span 2">パスの前に付けて URL として記録します。入れておくと「ファイルを開く」「Windowsで開く」でブラウザの SharePoint の画面が開きます(パスが /sites/… で始まる場合はテナントのURLまで、ライブラリからのパスの場合はサイトのURLまで)。</span>
+      <span>SharePoint のURL(任意)</span><input type="text" id="sp-prefix" placeholder="ブラウザのアドレス欄の URL をそのまま貼り付け(例: https://xxx.sharepoint.com/sites/…)"><span></span>
+      <span></span><span class="hint" style="grid-column:span 2">入れておくと URL として記録し、「ファイルを開く」「Windowsで開く」でブラウザの SharePoint の画面が開きます。
+        対象のライブラリ・フォルダを開いたときのアドレス欄の URL をそのまま貼り付けてください(CSV のパスと重なる部分は自動で取り除きます)。</span>
       <span>保存するDB名</span><input type="text" id="sp-db" placeholder="空欄なら CSVと同じ名前"><span></span>
       <span></span><button class="primary" id="sp-go">取り込み開始</button><span></span>
     </div>

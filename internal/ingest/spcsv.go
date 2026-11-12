@@ -6,6 +6,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -27,7 +28,8 @@ import (
 //   Size    (任意): バイト数(ファイルのみ)。File_x0020_Size / Length でも可
 //
 // ルートは全行に共通する最も深いフォルダ。CSV に行が無い途中のフォルダはパスから補完する。
-// sitePrefix(例 https://xxx.sharepoint.com)を指定すると、ルートの前に付けて URL として記録する。
+// sitePrefix(SharePoint の URL)を指定すると、ルートの前に付けて URL として記録する。
+// ブラウザのアドレス欄の URL(…/Forms/AllItems.aspx?id=… を含む)をそのまま貼り付けてよい(spPrefix で必要な部分だけ使う)。
 
 type spRow struct {
 	segs  []string
@@ -77,7 +79,7 @@ func ImportSPCSV(ctx context.Context, csvPath, dbPath, sitePrefix string, prog f
 	if lead {
 		root = "/" + root
 	}
-	if p := strings.TrimRight(strings.TrimSpace(sitePrefix), "/"); p != "" {
+	if p := spPrefix(sitePrefix, lead, common); p != "" {
 		root = p + "/" + strings.TrimLeft(root, "/")
 	}
 	if root == "" {
@@ -268,4 +270,56 @@ func spDataTime(csvPath string) time.Time {
 		return st.ModTime()
 	}
 	return time.Now()
+}
+
+// spPrefix は貼り付けた URL から、CSV のパスの前に付ける部分を取り出す。
+//   - CSV のパスが「/」で始まる(/sites/… のサーバー相対パス)→ https://テナント だけ
+//   - ライブラリからのパス(Shared Documents/…)→ その最初のフォルダ名の手前まで(サイトの URL)
+//
+// アドレス欄の URL(…/Shared Documents/Forms/AllItems.aspx?id=/sites/…)でも、id のパスを手がかりに切り出す。
+func spPrefix(raw string, lead bool, common []string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return strings.TrimRight(raw, "/")
+	}
+	base := u.Scheme + "://" + u.Host
+	if lead {
+		return base
+	}
+	path := u.Path
+	if id := u.Query().Get("id"); strings.HasPrefix(id, "/") {
+		path = id // フォルダを開いた画面の URL: 実際のフォルダのパスは id にある
+	}
+	var segs []string
+	for _, x := range strings.Split(path, "/") {
+		if x != "" {
+			segs = append(segs, x)
+		}
+	}
+	cut := -1
+	if len(common) > 0 {
+		for i, x := range segs {
+			if strings.EqualFold(x, common[0]) {
+				cut = i
+				break
+			}
+		}
+	}
+	if cut < 0 { // CSV のパスと重なる部分が無い: 画面のページ部分(/Forms/…, /SitePages/…, *.aspx)を除く
+		cut = len(segs)
+		for i, x := range segs {
+			if l := strings.ToLower(x); l == "forms" || l == "sitepages" || l == "_layouts" || strings.HasSuffix(l, ".aspx") {
+				cut = i
+				break
+			}
+		}
+	}
+	if cut == 0 {
+		return base
+	}
+	return base + "/" + strings.Join(segs[:cut], "/")
 }
