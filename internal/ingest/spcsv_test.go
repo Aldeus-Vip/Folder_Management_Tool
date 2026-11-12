@@ -103,3 +103,28 @@ func TestSPPrefix(t *testing.T) {
 		}
 	}
 }
+
+func TestImportSPCSVUniquePerm(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "x.csv")
+	os.WriteFile(p, []byte("FullPath,IsFolder,UniquePerm\n"+
+		"/s/L/部門,True,False\n/s/L/部門/秘密,True,True\n/s/L/部門/秘密/a.txt,False,False\n/s/L/部門/公開,True,False\n/s/L/部門/公開/b.txt,False,True\n"), 0o644)
+	db := filepath.Join(dir, "x.db")
+	if _, err := ImportSPCSV(context.Background(), p, db, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := fsdb.Open(db)
+	defer s.Close()
+	e, _ := s.EstimateItems()
+	if !e.Perm.Scanned || e.Perm.Current != 2 {
+		t.Errorf("perm=%+v", e.Perm)
+	}
+	id, _ := s.FindPath("/s/L/部門/秘密")
+	v, _ := s.NodeACL(id)
+	if !v.Scanned || !v.Unique || !v.NoDetail || len(v.ACEs) != 0 {
+		t.Errorf("view=%+v", v)
+	}
+	if n, _ := s.Node(1); n.PermSub != 2 {
+		t.Errorf("root sub=%d", n.PermSub)
+	}
+}

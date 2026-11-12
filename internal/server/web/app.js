@@ -697,6 +697,11 @@ function permHTML(r) {
 function aclHTML(a, r) {
   if (!a.scanned) return '<span class="muted">取得していません</span>';
   const why = [a.protected ? '親からの継承を無効化' : '', a.aces.some(e => !e.inherited) ? '直接の付与あり' : ''].filter(Boolean).join(' / ');
+  if (a.noDetail) return (a.unique
+    ? '<div class="issue" style="margin:0 0 4px">🔑 SharePoint で<b>固有の権限</b>が設定されています(継承が切れています)</div>'
+    : '<div class="muted" style="margin-bottom:4px">親フォルダから引き継いだ権限のみ</div>')
+    + (r.dir && r.permSub ? `<div class="muted" style="margin-bottom:4px">自身と配下で固有の権限を持つ項目: ${fmtNum(r.permSub)}</div>` : '')
+    + '<span class="muted">付与先の内訳は一覧CSVに含まれません(SharePoint の「アクセス許可の管理」で確認してください)</span>';
   const head = a.unique
     ? `<div class="issue" style="margin:0 0 4px">🔑 SharePoint で<b>固有の権限</b>になります(${why})</div>`
     : '<div class="muted" style="margin-bottom:4px">親フォルダから引き継いだ権限のみ(固有の権限になりません)</div>';

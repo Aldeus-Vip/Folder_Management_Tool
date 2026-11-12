@@ -170,6 +170,7 @@ DBファイルは共同編集に向かないため、次の運用で作業をま
 同期せずに、Power Automate などで出力した一覧CSVから DB を作ることもできます(「データ取り込み」→「③ SharePoint の一覧CSVを取り込む」)。
 
 - 列: `FullPath`(パス。区切りは `/`)・`IsFolder`(True/False)は必須、`Modified`(更新日時 ISO8601)・`Size`(バイト数)は任意。ヘッダ名で判定し、列の順番・大文字小文字は問いません(`FileRef` / `FSObjType` / `File_x0020_Size` の列名も可)
+- `UniquePerm`(True/False。`HasUniqueRoleAssignments` も可)があれば、固有の権限の数(列・サマリー・警告)も確認できます。付与先の内訳は含みません
 - 全行に共通する最も深いフォルダがルートになります。CSV に行が無い途中のフォルダはパスから補完します
 - ファイル名が `SPTree_YYYYMMDD_HHMM.csv` なら、その日時(UTC)をデータ取得日時として記録します
 - 「SharePoint のURL」(ブラウザのアドレス欄の URL をそのまま貼り付け可。CSV のパスと重なる部分は自動で除く)を入れると URL で記録し、「ファイルを開く」「Windowsで開く」でブラウザの SharePoint の画面を開きます

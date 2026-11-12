@@ -99,7 +99,8 @@ window.TOKEN = "__TOKEN__";
   <div class="card">
     <h2>③ SharePoint の一覧CSVを取り込む</h2>
     <p class="hint">Power Automate などで出力した SharePoint のフォルダ・ファイルの一覧(CSV)から DB を作り、そのまま開きます。移行先の構成も同じ画面・同じ5Sルールで確認できます。<br>
-    ・CSV の列: <b>FullPath</b>(パス。区切りは /)・<b>IsFolder</b>(True/False)は必須。<b>Modified</b>(更新日時)・<b>Size</b>(バイト数)は任意。列の順番は自由です。<br>
+    ・CSV の列: <b>FullPath</b>(パス。区切りは /)・<b>IsFolder</b>(True/False)は必須。<b>Modified</b>(更新日時)・<b>Size</b>(バイト数)・<b>UniquePerm</b>(固有の権限 True/False)は任意。列の順番は自由です。<br>
+    ・UniquePerm があると、固有の権限の数(上限 50,000)も確認できます(付与先の内訳は含みません)。<br>
     ・全行に共通する最も深いフォルダがルートになります。CSV に行が無い途中のフォルダは自動で補完します。<br>
     ・ファイル名が <code>SPTree_YYYYMMDD_HHMM.csv</code> なら、その日時(UTC)をデータ取得日時として記録します。</p>
     <div class="form">
