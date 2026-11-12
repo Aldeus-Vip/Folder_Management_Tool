@@ -81,3 +81,25 @@ func TestImportSPCSVErrors(t *testing.T) {
 		t.Errorf("meta=%v", m)
 	}
 }
+
+func TestSPPrefix(t *testing.T) {
+	addr := "https://example.sharepoint.com/sites/P/Top/Shared%20Documents/Forms/AllItems.aspx?id=%2Fsites%2FP%2FTop%2FShared%20Documents%2F%E9%83%A8%E9%96%80&viewid=x"
+	lib := []string{"Shared Documents", "部門"}
+	for _, c := range []struct {
+		raw    string
+		lead   bool
+		common []string
+		want   string
+	}{
+		{addr, true, []string{"sites", "P"}, "https://example.sharepoint.com"},                       // /sites/… のパス → テナントだけ
+		{"https://example.sharepoint.com/sites/P/Top/", true, nil, "https://example.sharepoint.com"}, // サイトまで入れても重ならない
+		{addr, false, lib, "https://example.sharepoint.com/sites/P/Top"},                             // ライブラリからのパス → サイトまで
+		{"https://example.sharepoint.com/sites/P/Top", false, lib, "https://example.sharepoint.com/sites/P/Top"},
+		{"https://example.sharepoint.com/sites/P/Top/SitePages/Home.aspx", false, lib, "https://example.sharepoint.com/sites/P/Top"},
+		{"", true, nil, ""},
+	} {
+		if got := spPrefix(c.raw, c.lead, c.common); got != c.want {
+			t.Errorf("%s (%v): %s want %s", c.raw, c.lead, got, c.want)
+		}
+	}
+}
