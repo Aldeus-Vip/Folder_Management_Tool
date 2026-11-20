@@ -1727,6 +1727,7 @@ Views.summary = {
 Views.organize = {
   reset() {
     if (!this.src) this.build();
+    else { this.src.cols = this.columns(); this.src.renderHead(); } // DBを開き直したとき(権限の有無で列が変わる)
     $('#tr-owner').value = ''; $('#tr-filter').value = ''; $('#tr-filtered').innerHTML = '';
     this.model = new TreeModel(this.treeOpts());
     this.vmodel = new VTreeModel();
