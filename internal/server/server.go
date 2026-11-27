@@ -183,6 +183,27 @@ func (a *App) Handler() http.Handler {
 			}
 			return s.NodeACL(id)
 		}),
+		"GET /api/report/growth": a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) {
+			years, _ := strconv.Atoi(r.URL.Query().Get("years"))
+			rep, err := s.GrowthReport(qStr(r, "axis", "depth1"), years)
+			if err != nil {
+				return nil, badRequest("%v", err)
+			}
+			return map[string]any{"report": rep, "axes": fsdb.GrowthAxes}, nil
+		}),
+		"POST /api/report/growth": a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) {
+			var q struct {
+				Years   int      `json:"years"`
+				Folders []string `json:"folders"`
+			}
+			if err := decode(r, &q); err != nil {
+				return nil, err
+			}
+			if err := s.SetGrowthSetting(q.Years, q.Folders); err != nil {
+				return nil, badRequest("%v", err)
+			}
+			return map[string]any{}, nil
+		}),
 		"GET /api/owners":    a.withStore(func(r *http.Request, s *fsdb.Store) (any, error) { return s.Owners() }),
 		"GET /api/vwarnings": a.withStore(a.apiVWarnings),
 		"POST /api/vcreate":  a.withEdit(a.apiVCreate),
@@ -209,6 +230,10 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /ping", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "FolderManager") })
 	mux.HandleFunc("GET /api/export/list.csv", a.download(func(w io.Writer, r *http.Request, s *fsdb.Store) error {
 		return s.WriteCSV(w, fsdb.FilterFromQuery(r.URL.Query()))
+	}))
+	mux.HandleFunc("GET /api/export/growth.csv", a.download(func(w io.Writer, r *http.Request, s *fsdb.Store) error {
+		years, _ := strconv.Atoi(r.URL.Query().Get("years"))
+		return s.WriteGrowthCSV(w, qStr(r, "axis", "depth1"), years)
 	}))
 	mux.HandleFunc("GET /api/export/workorder.csv", a.download(func(w io.Writer, r *http.Request, s *fsdb.Store) error { return s.WriteWorkOrder(w) }))
 	mux.HandleFunc("GET /api/export/target_structure.csv", a.download(func(w io.Writer, r *http.Request, s *fsdb.Store) error { return s.WriteTargetStructure(w) }))

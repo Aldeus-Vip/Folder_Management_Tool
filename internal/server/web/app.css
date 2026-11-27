@@ -307,3 +307,12 @@ button.mini { padding: 0 6px; font-size: 12px; }
 .msel-pop label { display: block; padding: 3px 6px; border-radius: 4px; white-space: nowrap; cursor: pointer; }
 .msel-pop label:hover { background: var(--hover); }
 .msel-foot { border-top: 1px solid var(--line); margin-top: 4px; padding: 4px 6px 0; font-size: 12px; }
+
+/* 増加量レポート */
+.gbars { display: flex; align-items: flex-end; gap: 6px; margin: 12px 0 8px; overflow-x: auto; padding-bottom: 2px; }
+.gbar { display: flex; flex-direction: column; align-items: center; min-width: 56px; font-size: 11px; }
+.gbar i { display: block; width: 28px; background: var(--bar); border-radius: 4px 4px 0 0; min-height: 1px; }
+.gbar .gv { color: var(--ink3); white-space: nowrap; margin-bottom: 2px; }
+.gbar .gy { margin-top: 3px; }
+.gtable td:first-child { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gtable tr.gtotal td { font-weight: 600; border-top: 2px solid var(--line); }
