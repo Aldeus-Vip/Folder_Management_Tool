@@ -146,6 +146,7 @@ type ACLView struct {
 	Scanned   bool      `json:"scanned"`   // 権限を取得したか
 	Protected bool      `json:"protected"` // 親からの継承を無効にしている
 	Unique    bool      `json:"unique"`    // SharePoint で固有の権限になる
+	NoDetail  bool      `json:"noDetail"`  // 固有かどうかだけ取得(SharePoint の一覧CSV。付与先の内訳なし)
 	ACEs      []ACEView `json:"aces"`
 }
 
@@ -164,6 +165,11 @@ func (s *Store) NodeACL(id int64) (*ACLView, error) {
 		return &ACLView{ACEs: []ACEView{}}, nil
 	}
 	v := &ACLView{Scanned: true, Protected: prot == 1, Unique: prot == 1 || expl > 0, ACEs: []ACEView{}}
+	if text == "" {
+		var mode string
+		s.DB.QueryRow(`SELECT value FROM meta WHERE key='acl_mode'`).Scan(&mode)
+		v.NoDetail = mode == "spcsv"
+	}
 	for _, e := range decodeACEs(text) {
 		v.ACEs = append(v.ACEs, ACEView{ACE: e, RightsLabel: RightsLabel(e.Rights), ScopeLabel: ScopeLabel(e.Flags)})
 	}

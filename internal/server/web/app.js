@@ -697,6 +697,11 @@ function permHTML(r) {
 function aclHTML(a, r) {
   if (!a.scanned) return '<span class="muted">取得していません</span>';
   const why = [a.protected ? '親からの継承を無効化' : '', a.aces.some(e => !e.inherited) ? '直接の付与あり' : ''].filter(Boolean).join(' / ');
+  if (a.noDetail) return (a.unique
+    ? '<div class="issue" style="margin:0 0 4px">🔑 SharePoint で<b>固有の権限</b>が設定されています(継承が切れています)</div>'
+    : '<div class="muted" style="margin-bottom:4px">親フォルダから引き継いだ権限のみ</div>')
+    + (r.dir && r.permSub ? `<div class="muted" style="margin-bottom:4px">自身と配下で固有の権限を持つ項目: ${fmtNum(r.permSub)}</div>` : '')
+    + '<span class="muted">付与先の内訳は一覧CSVに含まれません(SharePoint の「アクセス許可の管理」で確認してください)</span>';
   const head = a.unique
     ? `<div class="issue" style="margin:0 0 4px">🔑 SharePoint で<b>固有の権限</b>になります(${why})</div>`
     : '<div class="muted" style="margin-bottom:4px">親フォルダから引き継いだ権限のみ(固有の権限になりません)</div>';
@@ -1722,6 +1727,7 @@ Views.summary = {
 Views.organize = {
   reset() {
     if (!this.src) this.build();
+    else { this.src.cols = this.columns(); this.src.renderHead(); } // DBを開き直したとき(権限の有無で列が変わる)
     $('#tr-owner').value = ''; $('#tr-filter').value = ''; $('#tr-filtered').innerHTML = '';
     this.model = new TreeModel(this.treeOpts());
     this.vmodel = new VTreeModel();
@@ -2245,6 +2251,53 @@ Views.exts = {
       ${this.rows.map(x => `<tr class="click" data-ext="${esc(x.key)}"><td>${fileIcon(x.key)} ${esc(x.label)}</td><td class="num">${fmtNum(x.count)}</td><td class="num">${fmtSize(x.size)}</td>
         <td class="num">${(x.size / tot * 100).toFixed(1)}%</td><td><div class="meter"><i style="width:${Math.round(x.size / tot * 160)}px"></i></div></td><td class="num">${fmtSize(Math.round(x.size / x.count))}</td></tr>`).join('')}</table></div>`;
     $$('#view-exts tr[data-ext]').forEach(tr => tr.onclick = () => show('list', { ext: tr.dataset.ext, kind: 'file' }));
+  },
+};
+
+// ===== レポート =====
+Views.report = {
+  reset() { this.data = null; },
+  async enter() {
+    const el = $('#view-report');
+    const axis = store.get('fm-growth-axis', 'depth1'), metric = store.get('fm-growth-metric', 'size');
+    if (!this.data || this.data.report.axis !== axis) this.data = await api('/api/report/growth?axis=' + encodeURIComponent(axis));
+    const { report: g, axes } = this.data;
+    const val = c => metric === 'files' ? fmtNum(c.files) : fmtSize(c.size);
+    const num = c => metric === 'files' ? c.files : c.size;
+    // 年ごとの合計の棒グラフ(「より前」「不明」を除く)
+    const yc = g.total.cells.slice(1, -1), ymax = Math.max(1, ...yc.map(num));
+    const bars = yc.map((c, i) => `<div class="gbar" title="${esc(g.cols[i + 1])}年: ${fmtSize(c.size)} / ${fmtNum(c.files)} ファイル">
+      <span class="gv">${val(c)}</span><i style="height:${Math.round(num(c) / ymax * 120)}px"></i><span class="gy">${esc(g.cols[i + 1])}</span></div>`).join('');
+    const row = (r, cls = '') => `<tr class="${cls}"><td title="${esc(r.label)}">${esc(r.label)}${r.note ? `<div class="muted" style="font-size:11px">${esc(r.note)}</div>` : ''}</td>
+      ${r.cells.map(c => `<td class="num${num(c) ? '' : ' muted'}" title="${fmtSize(c.size)} / ${fmtNum(c.files)} ファイル">${num(c) ? val(c) : '-'}</td>`).join('')}
+      <td class="num"><b>${val(r.total)}</b></td></tr>`;
+    el.innerHTML = `<div class="card"><h2>増加量レポート(最終更新年ごとのファイル数・容量)</h2>
+      <div class="issue" style="margin:0 0 8px">${esc(g.note)}</div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <label>切り口 <select id="gr-axis">${axes.map(a => `<option value="${a.key}" ${a.key === axis ? 'selected' : ''}>${esc(a.label)}</option>`).join('')}</select></label>
+        <label>表示 <select id="gr-metric"><option value="size">容量</option><option value="files" ${metric === 'files' ? 'selected' : ''}>ファイル数</option></select></label>
+        <label>期間 直近 <input type="number" id="gr-years" value="${g.years}" min="1" max="100" style="width:60px"> 年</label>
+        <span class="muted">基準年 ${g.base}(データ取得日)</span>
+        <button id="gr-csv">CSV出力</button></div>
+      <details id="gr-fold" ${axis === 'folders' ? 'open' : ''} style="margin-top:8px"><summary>指定フォルダ(切り口「指定したフォルダ / それ以外」で使用)</summary>
+        <p class="hint" style="margin:4px 0">1行に1つ。フルパス・ルートからの相対パス・フォルダ名のどれでも指定できます(フォルダ名だけの場合は、同じ名前のフォルダをすべて合計します)。</p>
+        <textarea id="gr-folders" rows="4" style="width:100%;font-family:inherit" placeholder="例: 保管資料&#10;営業部\\第一課\\2023">${esc(g.folders.join('\n'))}</textarea>
+        <button id="gr-save">保存して集計</button>
+        ${g.missing.length ? `<div class="issue block">見つからない指定フォルダ: ${g.missing.map(esc).join(' / ')}</div>` : ''}</details>
+      <div class="gbars">${bars}</div>
+      <div style="overflow:auto"><table class="t gtable"><tr><th>${esc(axes.find(a => a.key === axis)?.label || '')}</th>${g.cols.map(c => `<th class="num">${esc(c)}</th>`).join('')}<th class="num">合計</th></tr>
+        ${g.rows.map(r => row(r)).join('')}${row(g.total, 'gtotal')}</table></div>
+      <p class="hint">セルにマウスを重ねると、容量とファイル数の両方を表示します。フォルダは数えず、ファイルだけを集計しています。</p></div>`;
+    const reload = async () => { this.data = null; await this.enter(); };
+    $('#gr-axis', el).onchange = guard(async e => { store.set('fm-growth-axis', e.target.value); await reload(); });
+    $('#gr-metric', el).onchange = guard(async e => { store.set('fm-growth-metric', e.target.value); await this.enter(); });
+    const save = async () => {
+      await api('/api/report/growth', { years: +$('#gr-years', el).value, folders: $('#gr-folders', el).value.split('\n') });
+      await reload();
+    };
+    $('#gr-years', el).onchange = guard(save);
+    $('#gr-save', el).onclick = guard(async () => { if (axis !== 'folders') store.set('fm-growth-axis', 'folders'); await save(); });
+    $('#gr-csv', el).onclick = () => download('/api/export/growth.csv', { axis });
   },
 };
 

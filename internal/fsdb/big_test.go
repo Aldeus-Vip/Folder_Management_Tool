@@ -96,6 +96,13 @@ func TestBigPlan(t *testing.T) {
 		"VChildren(整理先)":   func() error { _, err := s.VChildren(v); return err },
 		"Summary":          func() error { _, err := s.Summary(); return err },
 		"Summary(2nd)":     func() error { _, err := s.Summary(); return err },
+		"Growth depth2":    func() error { _, err := s.GrowthReport("depth2", 10); return err },
+		"Growth folders": func() error {
+			s.SetGrowthSetting(10, []string{"2003年度_プロジェクト資料_003"})
+			_, err := s.GrowthReport("folders", 10)
+			return err
+		},
+		"Growth kind": func() error { _, err := s.GrowthReport("kind", 10); return err },
 	} {
 		t0 := time.Now()
 		if err := fn(); err != nil {

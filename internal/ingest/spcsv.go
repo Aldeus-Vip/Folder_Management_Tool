@@ -26,6 +26,7 @@ import (
 //   IsFolder(必須): True / False。FSObjType(1 = フォルダ)でも可
 //   Modified(任意): 更新日時(ISO8601)
 //   Size    (任意): バイト数(ファイルのみ)。File_x0020_Size / Length でも可
+//   UniquePerm(任意): True = 固有の権限(HasUniqueRoleAssignments)。あれば固有の権限の数を数えられる
 //
 // ルートは全行に共通する最も深いフォルダ。CSV に行が無い途中のフォルダはパスから補完する。
 // sitePrefix(SharePoint の URL)を指定すると、ルートの前に付けて URL として記録する。
@@ -36,6 +37,15 @@ type spRow struct {
 	dir   bool
 	mtime int64
 	size  int64
+	perm  int8 // 固有の権限: -1 = 列なし, 0 = なし(親から継承), 1 = あり
+}
+
+// acl は UniquePerm 列から作る権限(付与先の内訳は CSV に無いので、固有かどうかだけ)。
+func (r *spRow) acl() *fsdb.ACL {
+	if r.perm < 0 {
+		return nil
+	}
+	return &fsdb.ACL{Protected: r.perm == 1, ACEs: []fsdb.ACE{}}
 }
 
 // spFileTime はファイル名の SPTree_YYYYMMDD_HHMM(UTC)をデータ取得日時として読む。
@@ -111,7 +121,7 @@ func ImportSPCSV(ctx context.Context, csvPath, dbPath, sitePrefix string, prog f
 		}
 		if len(r.segs) == len(common) { // ルート自身の行
 			if r.dir {
-				b.Recs[0].Mtime = r.mtime
+				b.Recs[0].Mtime, b.Recs[0].ACL = r.mtime, r.acl()
 			}
 			continue
 		}
@@ -123,14 +133,14 @@ func ImportSPCSV(ctx context.Context, csvPath, dbPath, sitePrefix string, prog f
 				conflict++
 			case r.dir && !explicit[i]: // 補完済みのフォルダに行が来た
 				explicit[i] = true
-				rec.Mtime = r.mtime
+				rec.Mtime, rec.ACL = r.mtime, r.acl()
 			default:
 				dupRows++
 			}
 			continue
 		}
 		parent := ensureDir(r.segs[:len(r.segs)-1])
-		rec := fsdb.Record{Parent: parent, IsDir: r.dir, Name: r.segs[len(r.segs)-1], Mtime: r.mtime}
+		rec := fsdb.Record{Parent: parent, IsDir: r.dir, Name: r.segs[len(r.segs)-1], Mtime: r.mtime, ACL: r.acl()}
 		if !r.dir {
 			rec.Size = r.size
 		}
@@ -153,6 +163,9 @@ func ImportSPCSV(ctx context.Context, csvPath, dbPath, sitePrefix string, prog f
 	b.Meta["scanned_at"] = spDataTime(csvPath).Format("2006/01/02 15:04:05")
 	if strings.Contains(root, "://") {
 		b.Meta["web_root"] = root // パスが URL のとき「開く」はブラウザで開く
+	}
+	if rows[0].perm >= 0 {
+		b.Meta["acl_mode"] = "spcsv" // 固有の権限かどうかだけ(付与先の内訳なし)
 	}
 	if err := b.Finalize(ctx, dbPath, prog); err != nil {
 		return nil, err
@@ -201,6 +214,7 @@ func readSPCSV(ctx context.Context, rd io.Reader) (rows []spRow, lead bool, bad 
 	}
 	cPath, cDir := pick("fullpath", "fileref", "path"), pick("isfolder", "fsobjtype")
 	cMod, cSize := pick("modified"), pick("size", "file_x0020_size", "length", "file/length")
+	cPerm := pick("uniqueperm", "hasuniqueroleassignments", "uniquepermissions")
 	if cPath < 0 || cDir < 0 {
 		return nil, false, 0, fmt.Errorf("CSVに必須の列(FullPath・IsFolder)がありません。ヘッダ: %s", strings.Join(head, ", "))
 	}
@@ -242,6 +256,15 @@ func readSPCSV(ctx context.Context, rd io.Reader) (rows []spRow, lead bool, bad 
 			r.mtime = t
 		}
 		r.size, _ = strconv.ParseInt(get(rec, cSize), 10, 64)
+		r.perm = -1
+		if cPerm >= 0 {
+			switch strings.ToLower(get(rec, cPerm)) {
+			case "true", "1", "yes":
+				r.perm = 1
+			default:
+				r.perm = 0
+			}
+		}
 		rows = append(rows, r)
 	}
 	return rows, lead, bad, nil
